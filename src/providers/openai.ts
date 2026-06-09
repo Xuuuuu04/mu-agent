@@ -18,6 +18,7 @@ export function createOpenAIProvider(config: ProviderConfig): ModelProvider {
         max_tokens: params.max_tokens ?? config.max_tokens ?? 4096,
         messages,
       }
+      if (config.temperature !== undefined) body.temperature = config.temperature
       if (params.tools && params.tools.length > 0) {
         body.tools = params.tools.map(t => ({
           type: 'function',

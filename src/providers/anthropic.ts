@@ -27,6 +27,7 @@ export function createAnthropicProvider(config: ProviderConfig): ModelProvider {
         system: systemContent,
         messages,
       }
+      if (config.temperature !== undefined) requestParams.temperature = config.temperature
 
       if (params.tools && params.tools.length > 0) {
         const tools: Array<Record<string, unknown>> = params.tools.map(t => ({

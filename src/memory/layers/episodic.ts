@@ -59,12 +59,24 @@ export class EpisodicLayer {
   }
 
   private getRecentSummary(): string | null {
+    const parts: string[] = []
+
+    // 近 3 天的每日摘要:没有它,"前天聊了什么"她只能靠关键词检索碰运气
+    const summaries = this.store.getRecentDailySummaries(3)
     const today = new Date().toISOString().slice(0, 10)
+    for (const s of summaries.reverse()) {
+      if (s.date === today) continue  // 今天的用下面的实时窗口,不用摘要
+      parts.push(`[${s.date}] ${s.summary}`)
+    }
+
     const todaySummary = this.store.getDailySummary(today)
-    if (todaySummary) return todaySummary.summary
+    if (todaySummary) {
+      parts.push(todaySummary.summary)
+      return parts.join('\n')
+    }
 
     const recent = this.store.getRecentEpisodes(24, 20)
-    if (recent.length === 0) return null
+    if (recent.length === 0) return parts.length > 0 ? parts.join('\n') : null
 
     const lines: string[] = []
     for (const ep of recent.reverse().slice(0, 10)) {
@@ -73,7 +85,8 @@ export class EpisodicLayer {
       const time = relativeTime(new Date(ep.timestamp), new Date())
       lines.push(`[${time}] ${role}: ${preview}`)
     }
-    return lines.join('\n')
+    if (lines.length > 0) parts.push(lines.join('\n'))
+    return parts.length > 0 ? parts.join('\n') : null
   }
 
   // 四路检索合并,去重(排除最近24h已在摘要里出现的)

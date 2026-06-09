@@ -73,6 +73,8 @@ export interface ProviderConfig {
   model: string
   max_tokens?: number
   supports_cache?: boolean
+  // 采样温度。人格类应用建议 0.8-1.0(更鲜活),不配则用 provider 默认
+  temperature?: number
   // openai-format provider 的请求超时(ms)，默认 120000；GLM 等推理模型可调大
   timeout_ms?: number
 }

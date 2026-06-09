@@ -2,7 +2,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { StreamEntry } from '../../core/types.js'
 
-const MAX_ENTRIES = 8
+// 她一天醒十几次,8 条意识流意味着上午想的事晚上就滚没了,16 条够覆盖一整天
+const MAX_ENTRIES = 16
 const ACTIVITY_WINDOW = 10
 
 export class StreamLayer {
