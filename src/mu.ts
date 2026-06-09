@@ -156,12 +156,12 @@ async function main() {
   const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
   // 只负责把一条消息 POST 到 QQ bridge，失败抛错(不兜底)，供 deliverToUser/drainOutbox 复用
-  const postToQQ = async (text: string): Promise<void> => {
+  const postToQQ = async (text: string, imagePath?: string): Promise<void> => {
     const r = await fetch(qqSendUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-      signal: AbortSignal.timeout(15000),
+      body: JSON.stringify(imagePath ? { text, image: imagePath } : { text }),
+      signal: AbortSignal.timeout(30000),
     })
     const d = await r.json().catch(() => ({})) as { ok?: boolean; error?: string }
     if (!r.ok || !d.ok) throw new Error(d.error ?? `HTTP ${r.status}`)
@@ -180,35 +180,36 @@ async function main() {
     }
   }
 
-  const deliverToUser = async (text: string): Promise<void> => {
+  const deliverToUser = async (text: string, imagePath?: string): Promise<void> => {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        await postToQQ(text)
-        console.log(`  [deliver] 主动消息已发 QQ`)
+        await postToQQ(text, imagePath)
+        console.log(`  [deliver] 主动消息已发 QQ${imagePath ? '(带图)' : ''}`)
         await drainOutbox()   // 这次通了，顺手把之前积压的也补发掉
         return
       } catch (e) {
         if (attempt < 2) { await sleep(500 * 2 ** attempt); continue }
-        webhook.pushOutbox(text)
+        // outbox 只兜文本;图片发不出去让她下次再试(文件还在她手里)
+        webhook.pushOutbox(imagePath ? `${text}\n(本想带一张图: ${imagePath},没发出去)` : text)
         console.error(`[deliver] QQ 主动发送失败 3 次,转 outbox: ${(e as Error).message}`)
       }
     }
   }
 
   // message_send / 主动消息的发送路由
-  loop.setSendRouter(async (source, text) => {
+  loop.setSendRouter(async (source, text, imagePath) => {
     if (source === 'cli') {
       await cli.send({ target: { source: 'cli', chat_id: 'local' }, content: [{ type: 'text', text }] })
       return
     }
     if (source === 'autonomous') {
       proactive.recordSent()
-      console.log(`\n沐(主动): ${text}\n`)
-      await deliverToUser(text)
+      console.log(`\n沐(主动): ${text}${imagePath ? ` [图:${imagePath}]` : ''}\n`)
+      await deliverToUser(text, imagePath)
     } else if (source === 'webhook') {
       // QQ 对话中途沐又多说的一条：必须走 QQ 主动推，否则塞进 web-only outbox 用户根本看不到
-      console.log(`\n沐(追发): ${text}\n`)
-      await deliverToUser(text)
+      console.log(`\n沐(追发): ${text}${imagePath ? ` [图:${imagePath}]` : ''}\n`)
+      await deliverToUser(text, imagePath)
     } else {
       // 其他来源(微信 iLink 主动推有 stale-token 硬限制)只能进 outbox 兜底
       webhook.pushOutbox(text)

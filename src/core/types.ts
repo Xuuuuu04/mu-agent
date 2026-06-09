@@ -75,6 +75,8 @@ export interface ProviderConfig {
   supports_cache?: boolean
   // 采样温度。人格类应用建议 0.8-1.0(更鲜活),不配则用 provider 默认
   temperature?: number
+  // 端点支持 thinking.type 开关(GLM anthropic 端点),简单消息可禁推理提速
+  supports_thinking_control?: boolean
   // openai-format provider 的请求超时(ms)，默认 120000；GLM 等推理模型可调大
   timeout_ms?: number
 }
@@ -126,8 +128,8 @@ export interface ToolContext {
   config: MuConfig
   dataDir: string
   log: (msg: string) => void
-  // 主动给用户发消息(message_send 用),路由到当前网关
-  sendMessage?: (text: string) => Promise<void>
+  // 主动给用户发消息(message_send 用),路由到当前网关。imagePath 是本地图片,QQ 走富媒体
+  sendMessage?: (text: string, imagePath?: string) => Promise<void>
   // 设置下次唤醒(schedule_wake 用)
   scheduleWake?: (seconds: number, reason: string, activityType: string) => void
 }

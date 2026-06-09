@@ -19,6 +19,10 @@ export function createOpenAIProvider(config: ProviderConfig): ModelProvider {
         messages,
       }
       if (config.temperature !== undefined) body.temperature = config.temperature
+      // GLM openai 兼容端点支持 thinking.type 开关,寒暄消息禁推理省 30-60s
+      if (params.thinking === 'disabled' && config.supports_thinking_control) {
+        body.thinking = { type: 'disabled' }
+      }
       if (params.tools && params.tools.length > 0) {
         body.tools = params.tools.map(t => ({
           type: 'function',

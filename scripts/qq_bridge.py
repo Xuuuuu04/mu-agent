@@ -127,6 +127,26 @@ async def _send_c2c(openid: str, text: str, reply_to: "str | None" = None, seq: 
     return await _api("POST", f"/v2/users/{openid}/messages", body)
 
 
+async def _send_c2c_image(openid: str, image_path: str, reply_to: "str | None" = None, seq: int = 1) -> dict:
+    """发图片。本地文件 → base64 直传 files 接口拿 file_info → 富媒体消息(msg_type=7)。
+    沐送画/发截图给哥哥就走这条。"""
+    import base64
+    with open(image_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    up = await _api("POST", f"/v2/users/{openid}/files", {
+        "file_type": 1,  # 1=图片
+        "srv_send_msg": False,
+        "file_data": b64,
+    })
+    file_info = up.get("file_info")
+    if not file_info:
+        raise RuntimeError(f"图片上传失败: {up}")
+    body = {"content": " ", "msg_type": 7, "media": {"file_info": file_info}, "msg_seq": seq if reply_to else _msg_seq()}
+    if reply_to:
+        body["msg_id"] = reply_to
+    return await _api("POST", f"/v2/users/{openid}/messages", body)
+
+
 async def _send_reply_chunks(openid: str, reply: str, msg_id: str) -> None:
     """按空行把回复拆成多条发(她的风格本来就是一个想法一条),像真人连发。
     QQ 同一 msg_id 被动回复最多 5 条:前 4 条独立发,剩余合并进第 5 条。"""
@@ -303,21 +323,29 @@ async def _ws_loop():
             backoff = min(backoff * 2, 30)
 
 
-# 沐主动消息:POST /send {text} → 主动发给最近对话的哥哥(不带 msg_id)
+# 沐主动消息:POST /send {text?, image?} → 主动发给最近对话的哥哥(不带 msg_id)
+# image 是本地图片路径(mu 和 bridge 同机),有 image 先发图再发文字
 async def _http_send(request: "web.Request") -> "web.Response":
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "bad json"}, status=400)
     text = str(data.get("text") or "").strip()
-    if not text:
+    image = str(data.get("image") or "").strip()
+    if not text and not image:
         return web.json_response({"error": "empty"}, status=400)
     peer = str(data.get("to") or "").strip() or _last_peer
     if not peer:
         return web.json_response({"error": "还没有人和沐说过话,不知道发给谁"}, status=409)
     try:
-        await _send_c2c(peer, text, reply_to=None)  # 主动消息,不带 msg_id
-        print(f"[qq-bridge] 主动发给 {peer[:8]}: {text[:30]}", flush=True)
+        if image:
+            if not os.path.isfile(image):
+                return web.json_response({"error": f"图片不存在: {image}"}, status=400)
+            await _send_c2c_image(peer, image, reply_to=None)
+            print(f"[qq-bridge] 主动发图给 {peer[:8]}: {image}", flush=True)
+        if text:
+            await _send_c2c(peer, text, reply_to=None)  # 主动消息,不带 msg_id
+            print(f"[qq-bridge] 主动发给 {peer[:8]}: {text[:30]}", flush=True)
         return web.json_response({"ok": True, "to": peer})
     except Exception as exc:  # noqa: BLE001
         print(f"[qq-bridge] 主动发送失败: {exc}", flush=True)

@@ -28,6 +28,10 @@ export function createAnthropicProvider(config: ProviderConfig): ModelProvider {
         messages,
       }
       if (config.temperature !== undefined) requestParams.temperature = config.temperature
+      // 简单消息禁推理:GLM-5.1 的 reasoning 动辄 30-60s,寒暄不值得
+      if (params.thinking === 'disabled' && config.supports_thinking_control) {
+        requestParams.thinking = { type: 'disabled' }
+      }
 
       if (params.tools && params.tools.length > 0) {
         const tools: Array<Record<string, unknown>> = params.tools.map(t => ({

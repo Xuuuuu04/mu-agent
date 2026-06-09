@@ -28,7 +28,7 @@ export class AgentLoop {
   private lastSuccessAt: Date | null = null
   private consecutiveFailures = 0
   private compacting = false
-  private sendRouter: ((source: string, text: string) => Promise<void>) | null = null
+  private sendRouter: ((source: string, text: string, imagePath?: string) => Promise<void>) | null = null
 
   constructor(opts: {
     config: MuConfig
@@ -130,6 +130,13 @@ export class AgentLoop {
         })
       }
 
+      // 简单寒暄不值得 30-60s 的深度推理:短、无疑问、无任务动词的消息禁 thinking 秒回。
+      // 拿不准的(带问号/任务词/长文本)一律保持推理,宁慢勿浅
+      const isSimpleChat = trigger.type === 'message'
+        && trigger.message.content.type === 'text'
+        && trigger.message.content.text.length <= 20
+        && !/[查帮搜找分析想念记得为什么怎么吗呢??]/.test(trigger.message.content.text)
+
       let messages = this.buildMessages()
       let turns = 0
       let finalText = ''
@@ -142,6 +149,7 @@ export class AgentLoop {
           messages,
           tools: toolDefs.length > 0 ? toolDefs : undefined,
           max_tokens: this.config.model.primary.max_tokens ?? 4096,
+          thinking: isSimpleChat ? 'disabled' : undefined,
         })
 
         totalInput += response.usage.input_tokens
@@ -175,7 +183,7 @@ export class AgentLoop {
               dataDir: this.config.paths.data,
               log: (msg: string) => console.log(`  [tool:${block.name}] ${msg}`),
               sendMessage: this.sendRouter
-                ? (text: string) => this.sendRouter!(replySource, text)
+                ? (text: string, imagePath?: string) => this.sendRouter!(replySource, text, imagePath)
                 : undefined,
               scheduleWake: this.scheduler
                 ? (seconds, reason, activity) => {
@@ -411,8 +419,8 @@ export class AgentLoop {
     this.sessionId = `s_${Date.now().toString(36)}`
   }
 
-  // mu.ts 注入:把 message_send 的文本路由到对应网关
-  setSendRouter(fn: (source: string, text: string) => Promise<void>): void {
+  // mu.ts 注入:把 message_send 的文本(可带图片)路由到对应网关
+  setSendRouter(fn: (source: string, text: string, imagePath?: string) => Promise<void>): void {
     this.sendRouter = fn
   }
 
