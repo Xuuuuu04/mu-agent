@@ -36,6 +36,9 @@ from aiohttp import web  # noqa: E402
 
 APP_ID = os.environ.get("QQ_APP_ID", "").strip()
 CLIENT_SECRET = os.environ.get("QQ_CLIENT_SECRET", "").strip()
+# 主人白名单:设了就只理这个 openid(否则任何加了 bot 的陌生人都会被当成"哥哥",
+# 既泄露隐私又污染沐的记忆)。不设保持旧行为。
+MASTER_OPENID = os.environ.get("QQ_MASTER_OPENID", "").strip()
 MU_WEBHOOK = os.environ.get("MU_WEBHOOK", "http://127.0.0.1:3210/webhook/message")
 SEND_PORT = int(os.environ.get("MU_QQ_SEND_PORT", "3212"))
 HOME = os.environ.get("MU_QQ_HOME", "/home/xpark/mu/data/qq")
@@ -153,6 +156,9 @@ async def _handle_c2c(d: dict):
     content = str(d.get("content") or "").strip()
     msg_id = str(d.get("id") or "").strip()
     if not openid or not content:
+        return
+    if MASTER_OPENID and openid != MASTER_OPENID:
+        print(f"[qq-bridge] 忽略陌生人 {openid[:8]} 的消息", flush=True)
         return
     _last_peer = openid
     _save_peer(openid)

@@ -27,6 +27,7 @@ export class AgentLoop {
   private lastActivity = Date.now()
   private lastSuccessAt: Date | null = null
   private consecutiveFailures = 0
+  private compacting = false
   private sendRouter: ((source: string, text: string) => Promise<void>) | null = null
 
   constructor(opts: {
@@ -303,6 +304,42 @@ export class AgentLoop {
 
     if (this.consolidation?.shouldConsolidate()) {
       await this.consolidation.consolidate()
+    }
+
+    await this.maybeCompactSession()
+  }
+
+  // session autocompact:历史超过 30 条就把头部压成一条"前情提要",原位替换。
+  // 这样长会话丢的是细节不是事实,trimHistory 的硬裁剪降级为压缩失败时的兜底。
+  // 跑在 postProcess(异步)里,期间下一个 cycle 可能已开动,所以替换前做代次校验。
+  private async maybeCompactSession(): Promise<void> {
+    if (this.compacting || !this.consolidation) return
+    if (this.sessionHistory.length <= 30) return
+    this.compacting = true
+    try {
+      const sessionId = this.sessionId
+      // 头部至少 16 条,延伸到安全切点,保证替换后剩余历史以纯文本 user 开头
+      let headEnd = 16
+      while (headEnd < this.sessionHistory.length - 8 && !isSafeStart(this.sessionHistory[headEnd]!)) {
+        headEnd++
+      }
+      if (headEnd >= this.sessionHistory.length - 4) return
+      const head = this.sessionHistory.slice(0, headEnd)
+
+      const summary = await this.consolidation.compactHistory(head)
+      if (!summary) return
+
+      // 代次校验:压缩期间 session 被轮转/清空/裁剪过就放弃(宁可不压,不能错接)
+      if (this.sessionId !== sessionId) return
+      if (this.sessionHistory.length < headEnd || this.sessionHistory[0] !== head[0]) return
+
+      this.sessionHistory.splice(0, headEnd, {
+        role: 'user',
+        content: `[前情提要,你们之前聊的浓缩] ${summary}`,
+      })
+      console.log(`[agent-loop] 会话压缩: ${headEnd} 条 → 1 条前情提要`)
+    } finally {
+      this.compacting = false
     }
   }
 

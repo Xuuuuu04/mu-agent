@@ -48,6 +48,8 @@ MU_WEBHOOK = os.environ.get("MU_WEBHOOK", "http://127.0.0.1:3210/webhook/message
 SEND_PORT = int(os.environ.get("MU_WECHAT_SEND_PORT", "3211"))
 ACCOUNT_ID = os.environ.get("WEIXIN_ACCOUNT_ID", "").strip()
 TOKEN = os.environ.get("WEIXIN_TOKEN", "").strip()
+# 主人白名单:设了就只理这个 user_id,陌生人消息直接忽略(防隐私泄露+记忆污染)
+MASTER_ID = os.environ.get("WEIXIN_MASTER_ID", "").strip()
 BASE_URL = os.environ.get("WEIXIN_BASE_URL", ILINK_BASE_URL).strip().rstrip("/")
 HOME = os.environ.get("MU_WECHAT_HOME", "/home/xpark/mu/data/wechat")
 
@@ -141,6 +143,9 @@ async def _handle(msg):
     global _last_peer
     sender = str(msg.get("from_user_id") or "").strip()
     if not sender or sender == ACCOUNT_ID:
+        return
+    if MASTER_ID and sender != MASTER_ID:
+        print(f"[wechat-bridge] 忽略陌生人 {sender[:8]} 的消息", flush=True)
         return
     text = _extract_text(msg.get("item_list") or [])
     if not text:

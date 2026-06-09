@@ -98,6 +98,39 @@ export class MemoryConsolidation {
     }
   }
 
+  // session autocompact:把会话头部的多轮对话压成"前情提要",供 agent-loop 原位替换。
+  // 与 summarizeSession 不同——这个结果留在活跃会话里继续参与对话,要保住可续聊的细节
+  async compactHistory(history: ChatMessage[]): Promise<string | null> {
+    const text = history
+      .map(m => {
+        const role = m.role === 'user' ? '哥哥' : '沐'
+        if (typeof m.content === 'string') return `${role}: ${m.content}`
+        const parts = m.content.map(b => {
+          if (b.type === 'text') return b.text ?? ''
+          if (b.type === 'tool_use') return `[用了工具 ${b.name}]`
+          return ''
+        }).filter(Boolean).join(' ')
+        return parts ? `${role}: ${parts}` : ''
+      })
+      .filter(Boolean)
+      .join('\n')
+
+    if (text.length < 50) return null
+
+    try {
+      const response = await this.router.chat({
+        system: '把这段对话压成简短的"前情提要"。保留:聊了什么关键的事、做过的决定、还没做完的事、当时的情绪氛围。用沐的第一人称视角,称对方"哥哥",口语化,300字以内,只输出提要本身。',
+        messages: [{ role: 'user', content: text.slice(0, 8000) }],
+        max_tokens: 800,
+      })
+      const summary = response.content.filter(b => b.type === 'text').map(b => b.text).join('').trim()
+      return summary || null
+    } catch (err) {
+      console.error(`[consolidation] 会话压缩失败: ${(err as Error).message}`)
+      return null
+    }
+  }
+
   // 会话超时归档时调用:把这段会话压成一两句摘要,存成一条可检索的记忆
   async summarizeSession(sessionId: string, history: ChatMessage[]): Promise<void> {
     const text = history
