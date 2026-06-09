@@ -1,0 +1,12 @@
+node_modules/
+dist/
+data/
+soul/
+config/config.yaml
+*.env
+*.env.*
+.DS_Store
+.claude/
+.opencode/
+__pycache__/
+*.pyc

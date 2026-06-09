@@ -1,0 +1,74 @@
+model:
+  primary:
+    name: minimax-m3
+    format: anthropic
+    base_url: https://api.minimaxi.com/anthropic
+    api_key: YOUR_API_KEY_HERE
+    model: minimax-m3
+    max_tokens: 4096
+    supports_cache: true
+
+  # 主模型挂了的兜底链,按顺序尝试
+  # fallback:
+  #   - name: glm
+  #     format: anthropic
+  #     base_url: https://open.bigmodel.cn/api/anthropic
+  #     api_key: YOUR_GLM_KEY
+  #     model: glm-4.6
+  #   - name: deepseek
+  #     format: openai
+  #     base_url: https://api.deepseek.com
+  #     api_key: YOUR_DEEPSEEK_KEY
+  #     model: deepseek-chat
+
+  # 辅助模型:嵌入用于语义检索,整合可用便宜模型省钱
+  # auxiliary:
+  #   embedding:
+  #     name: bge-m3
+  #     format: openai
+  #     base_url: https://api.siliconflow.cn/v1
+  #     api_key: YOUR_SILICONFLOW_KEY
+  #     model: BAAI/bge-m3
+  #   consolidation:
+  #     name: minimax-m3
+  #     format: anthropic
+  #     base_url: https://api.minimaxi.com/anthropic
+  #     api_key: YOUR_API_KEY_HERE
+  #     model: minimax-m3
+
+scheduler:
+  min_wake_seconds: 300          # 最短 5 分钟,防刷屏
+  max_wake_seconds: 14400        # 最长 4 小时,防消失
+  cron_fallback_seconds: 7200    # cron 兜底每 2 小时查一次
+  night_min_wake_seconds: 3600   # 深夜最短 1 小时,省 token
+  night_start_hour: 1
+  night_end_hour: 7
+
+agent:
+  max_turns_per_cycle: 20        # 单 cycle 最大工具轮数,防死循环
+  session_timeout_minutes: 30    # 超过这么久没说话,会话归档生成摘要
+
+paths:
+  soul: ./soul
+  data: ./data
+  tools: ./data/tools
+
+# 主动通信(F8)。默认关。开了沐会在想念/承诺到期时主动找你
+# proactive:
+#   enabled: true
+#   max_per_hour: 5
+#   quiet_start_hour: 1            # 深夜不打扰
+#   quiet_end_hour: 8
+
+# 微信网关。默认关,xpark 上接好 WeChatFerry 再开
+# wechat:
+#   enabled: true
+#   host: 127.0.0.1
+#   port: 10086
+#   self_wxid: wxid_xxxxx         # 沐自己的 wxid,群里判断 @ 用
+
+# 外部 MCP server。启动时连接,工具自动并入
+# mcp:
+#   - name: filesystem
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "/some/dir"]

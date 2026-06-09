@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>沐 — 控制台</title>
+<style>
+:root { --bg:#0a0a0f; --card:#12121a; --border:#1e1e2e; --text:#e0e0e8; --dim:#666680; --accent:#7c6fe0; --accent2:#e06f9f; --green:#4ade80; --warn:#fbbf24; --red:#ef4444; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+.layout { display:flex; min-height:100vh; }
+.sidebar { width:180px; border-right:1px solid var(--border); padding:20px 0; flex-shrink:0; }
+.brand { font-size:22px; font-weight:700; padding:0 20px 16px; display:flex; align-items:center; gap:8px; }
+.brand .dot { width:8px; height:8px; border-radius:50%; background:var(--green); }
+.brand .dot.offline { background:var(--red); }
+.nav-item { padding:10px 20px; cursor:pointer; font-size:14px; color:var(--dim); border-left:3px solid transparent; }
+.nav-item:hover { color:var(--text); background:var(--card); }
+.nav-item.active { color:var(--text); border-left-color:var(--accent); background:var(--card); }
+.main { flex:1; padding:24px; overflow-y:auto; max-height:100vh; }
+.panel { display:none; }
+.panel.active { display:block; }
+.card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:16px; }
+.card h2 { font-size:13px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; margin-bottom:12px; }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+@media (max-width:768px){ .grid2{ grid-template-columns:1fr; } .sidebar{ width:120px; } }
+.stat-row { display:flex; gap:24px; }
+.stat-item .label { font-size:12px; color:var(--dim); }
+.stat-item .value { font-size:20px; font-weight:600; }
+.mood-badge { display:inline-block; padding:4px 12px; border-radius:20px; font-size:13px; font-weight:500; }
+.mood-calm,.mood-active{ background:rgba(74,222,128,.15); color:var(--green); }
+.mood-missing{ background:rgba(224,111,159,.15); color:var(--accent2); }
+.mood-emo{ background:rgba(124,111,224,.15); color:var(--accent); }
+.mood-excited{ background:rgba(251,191,36,.15); color:var(--warn); }
+.mood-sleepy{ background:rgba(102,102,128,.15); color:var(--dim); }
+.list-item { padding:8px 0; border-bottom:1px solid var(--border); font-size:13px; line-height:1.5; }
+.list-item .meta { color:var(--dim); font-size:11px; }
+.chat-box { height:calc(100vh - 220px); min-height:360px; display:flex; flex-direction:column; }
+.chat-messages { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
+.msg { max-width:78%; padding:10px 14px; border-radius:12px; font-size:14px; line-height:1.5; word-break:break-word; white-space:pre-wrap; }
+.msg.user { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
+.msg.assistant { align-self:flex-start; background:var(--border); border-bottom-left-radius:4px; }
+.msg.proactive { align-self:flex-start; background:rgba(224,111,159,.18); border-bottom-left-radius:4px; }
+.msg .time { font-size:11px; opacity:.5; margin-top:4px; }
+.chat-input { display:flex; gap:8px; padding-top:12px; border-top:1px solid var(--border); }
+input,textarea,select { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:10px 12px; color:var(--text); font-size:14px; outline:none; font-family:inherit; }
+input:focus,textarea:focus { border-color:var(--accent); }
+.chat-input input { flex:1; }
+button { background:var(--accent); color:#fff; border:none; border-radius:8px; padding:10px 18px; font-size:14px; cursor:pointer; }
+button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:not-allowed; }
+button.ghost { background:transparent; border:1px solid var(--border); color:var(--dim); }
+.tag { display:inline-block; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:4px 10px; font-size:12px; margin:0 6px 6px 0; }
+.search-bar { width:100%; margin-bottom:12px; }
+.editor { width:100%; min-height:420px; font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:13px; line-height:1.6; resize:vertical; }
+.logline { font-family:ui-monospace,Menlo,monospace; font-size:12px; padding:2px 0; border-bottom:1px solid rgba(30,30,46,.5); color:var(--dim); white-space:pre-wrap; word-break:break-all; }
+.logline .err { color:var(--red); }
+.row { display:flex; gap:12px; align-items:center; margin-bottom:10px; }
+.row label { width:160px; font-size:13px; color:var(--dim); }
+.row input { width:120px; }
+.note { font-size:12px; color:var(--dim); margin-top:8px; }
+.scroll { max-height:60vh; overflow-y:auto; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="sidebar">
+    <div class="brand"><span class="dot" id="statusDot"></span>沐</div>
+    <div class="nav-item active" data-panel="dash">概览</div>
+    <div class="nav-item" data-panel="chat">对话</div>
+    <div class="nav-item" data-panel="memory">记忆</div>
+    <div class="nav-item" data-panel="tools">技能</div>
+    <div class="nav-item" data-panel="soul">人格</div>
+    <div class="nav-item" data-panel="config">配置</div>
+    <div class="nav-item" data-panel="logs">日志</div>
+  </div>
+
+  <div class="main">
+    <!-- 概览 -->
+    <div class="panel active" id="panel-dash">
+      <div class="grid2">
+        <div class="card">
+          <h2>状态</h2>
+          <div id="moodSection"><span class="mood-badge mood-calm">calm</span></div>
+          <div class="stat-row" style="margin-top:16px">
+            <div class="stat-item"><div class="label">记忆</div><div class="value" id="episodeCount">-</div></div>
+            <div class="stat-item"><div class="label">运行</div><div class="value" id="uptime">-</div></div>
+            <div class="stat-item"><div class="label">内存</div><div class="value" id="memoryUsage">-</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>承诺追踪</h2>
+          <div id="commitments" class="scroll"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 对话 -->
+    <div class="panel" id="panel-chat">
+      <div class="card chat-box">
+        <h2>跟沐说话</h2>
+        <div class="chat-messages" id="chatMessages"></div>
+        <div class="chat-input">
+          <input type="text" id="chatInput" placeholder="说点什么..." autocomplete="off">
+          <button id="sendBtn">发送</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 记忆 -->
+    <div class="panel" id="panel-memory">
+      <div class="card">
+        <h2>记忆检索</h2>
+        <input type="text" class="search-bar" id="searchInput" placeholder="搜索记忆,回车...">
+        <div class="scroll" id="episodeList"></div>
+      </div>
+    </div>
+
+    <!-- 技能 -->
+    <div class="panel" id="panel-tools">
+      <div class="card">
+        <h2>可用工具</h2>
+        <div id="toolList"></div>
+      </div>
+    </div>
+
+    <!-- 人格 -->
+    <div class="panel" id="panel-soul">
+      <div class="card">
+        <h2>人格文件</h2>
+        <div class="row">
+          <select id="soulFile"></select>
+          <button class="ghost" id="soulReload">重新读取</button>
+          <button id="soulSave">保存</button>
+        </div>
+        <textarea class="editor" id="soulEditor" placeholder="选个文件..."></textarea>
+        <div class="note" id="soulNote"></div>
+      </div>
+    </div>
+
+    <!-- 配置 -->
+    <div class="panel" id="panel-config">
+      <div class="card">
+        <h2>调度 / 行为</h2>
+        <div id="configForm"></div>
+        <button id="configSave" style="margin-top:12px">保存(重启生效)</button>
+        <div class="note" id="configNote"></div>
+      </div>
+    </div>
+
+    <!-- 日志 -->
+    <div class="panel" id="panel-logs">
+      <div class="card">
+        <h2>实时日志 <button class="ghost" id="logRefresh" style="float:right;padding:4px 10px">刷新</button></h2>
+        <div class="scroll" id="logList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = location.port === '3210' ? '' : `${location.protocol}//${location.hostname}:3210`;
+let lastOutboxId = 0;
+let logTimer = null;
+
+// 导航
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    item.classList.add('active');
+    const id = item.dataset.panel;
+    document.getElementById('panel-' + id).classList.add('active');
+    onPanel(id);
+  });
+});
+
+function onPanel(id) {
+  if (id === 'memory') loadRecentEpisodes();
+  if (id === 'tools') loadTools();
+  if (id === 'soul') loadSoulFiles();
+  if (id === 'config') loadConfig();
+  if (id === 'logs') { loadLogs(); logTimer = setInterval(loadLogs, 5000); }
+  else if (logTimer) { clearInterval(logTimer); logTimer = null; }
+}
+
+// 概览
+async function fetchStatus() {
+  try {
+    const d = await (await fetch(`${API}/api/status`)).json();
+    document.getElementById('statusDot').className = 'dot';
+    document.getElementById('episodeCount').textContent = d.episodes;
+    document.getElementById('uptime').textContent = fmtUptime(d.uptime);
+    document.getElementById('memoryUsage').textContent = d.memory_rss + 'MB';
+    if (d.mood) {
+      const m = d.mood.current || 'calm';
+      document.getElementById('moodSection').innerHTML =
+        `<span class="mood-badge mood-${m}">${m}</span> <span style="color:var(--dim);font-size:13px">${d.mood.reason || ''}</span>`;
+    }
+  } catch {
+    document.getElementById('statusDot').className = 'dot offline';
+  }
+}
+
+async function loadCommitments() {
+  try {
+    const d = await (await fetch(`${API}/api/commitments`)).json();
+    const el = document.getElementById('commitments');
+    const cs = (d.commitments || []).filter(c => c.status === 'active');
+    if (cs.length === 0) { el.innerHTML = '<div style="color:var(--dim)">暂无</div>'; return; }
+    el.innerHTML = cs.map(c =>
+      `<div class="list-item">${c.content}<div class="meta">${c.type === 'recurring' ? '周期' : (c.due || '一次性')}</div></div>`
+    ).join('');
+  } catch {}
+}
+
+// 对话
+async function sendMessage() {
+  const input = document.getElementById('chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  document.getElementById('sendBtn').disabled = true;
+  appendChat('user', text);
+  try {
+    const d = await (await fetch(`${API}/webhook/message`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, sender_name: '哥哥', sender_id: 'web_user' }),
+    })).json();
+    appendChat('assistant', d.response || '(无回复)');
+    fetchStatus();
+  } catch { appendChat('assistant', '(连接失败)'); }
+  finally { document.getElementById('sendBtn').disabled = false; input.focus(); }
+}
+
+function appendChat(role, text) {
+  const el = document.getElementById('chatMessages');
+  const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = `${escapeHtml(text)}<div class="time">${time}</div>`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+// 主动消息轮询(沐自己发来的)
+async function pollOutbox() {
+  try {
+    const d = await (await fetch(`${API}/api/outbox?since=${lastOutboxId}`)).json();
+    for (const m of d.messages || []) {
+      lastOutboxId = m.id;
+      appendChat('proactive', m.text);
+    }
+  } catch {}
+}
+
+// 记忆
+async function loadRecentEpisodes() {
+  try {
+    const d = await (await fetch(`${API}/api/episodes?hours=72&limit=30`)).json();
+    renderEpisodes(d.episodes || []);
+  } catch {}
+}
+async function searchMemory() {
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) return loadRecentEpisodes();
+  try {
+    const d = await (await fetch(`${API}/api/memory?q=${encodeURIComponent(q)}`)).json();
+    renderEpisodes(d.results || []);
+  } catch {}
+}
+function renderEpisodes(eps) {
+  const el = document.getElementById('episodeList');
+  if (!eps.length) { el.innerHTML = '<div style="color:var(--dim);padding:20px;text-align:center">暂无</div>'; return; }
+  el.innerHTML = eps.map(e => {
+    const role = e.role === 'user' ? '哥哥' : '沐';
+    const ts = new Date(e.timestamp).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return `<div class="list-item"><b style="color:var(--accent)">${role}</b> <span class="meta">${ts}</span><br>${escapeHtml((e.content || '').slice(0, 120))}</div>`;
+  }).join('');
+}
+
+// 技能
+async function loadTools() {
+  try {
+    const d = await (await fetch(`${API}/api/tools`)).json();
+    document.getElementById('toolList').innerHTML =
+      (d.tools || []).map(t => `<span class="tag">${t}</span>`).join('') || '<div style="color:var(--dim)">无</div>';
+  } catch {}
+}
+
+// 人格
+async function loadSoulFiles() {
+  try {
+    const d = await (await fetch(`${API}/api/soul`)).json();
+    const sel = document.getElementById('soulFile');
+    sel.innerHTML = (d.files || []).map(f => `<option>${f}</option>`).join('');
+    if ((d.files || []).length) loadSoulFile();
+  } catch {}
+}
+async function loadSoulFile() {
+  const file = document.getElementById('soulFile').value;
+  if (!file) return;
+  try {
+    const d = await (await fetch(`${API}/api/soul?file=${encodeURIComponent(file)}`)).json();
+    document.getElementById('soulEditor').value = d.content || '';
+  } catch {}
+}
+async function saveSoul() {
+  const file = document.getElementById('soulFile').value;
+  const content = document.getElementById('soulEditor').value;
+  try {
+    await fetch(`${API}/api/soul`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file, content }) });
+    document.getElementById('soulNote').textContent = '已保存 ' + new Date().toLocaleTimeString('zh-CN');
+  } catch { document.getElementById('soulNote').textContent = '保存失败'; }
+}
+
+// 配置
+const CONFIG_FIELDS = [
+  ['scheduler', 'min_wake_seconds', '最短唤醒(秒)'],
+  ['scheduler', 'max_wake_seconds', '最长唤醒(秒)'],
+  ['scheduler', 'night_min_wake_seconds', '深夜最短(秒)'],
+  ['agent', 'max_turns_per_cycle', '单轮最大工具数'],
+  ['agent', 'session_timeout_minutes', '会话超时(分)'],
+  ['proactive', 'max_per_hour', '主动消息/小时'],
+];
+let configCache = {};
+async function loadConfig() {
+  try {
+    configCache = await (await fetch(`${API}/api/config`)).json();
+    document.getElementById('configForm').innerHTML = CONFIG_FIELDS.map(([sec, key, label]) => {
+      const val = (configCache[sec] || {})[key] ?? '';
+      return `<div class="row"><label>${label}</label><input data-sec="${sec}" data-key="${key}" value="${val}"></div>`;
+    }).join('');
+  } catch {}
+}
+async function saveConfig() {
+  const body = {};
+  document.querySelectorAll('#configForm input').forEach(inp => {
+    const sec = inp.dataset.sec, key = inp.dataset.key;
+    body[sec] = body[sec] || {};
+    body[sec][key] = Number(inp.value);
+  });
+  try {
+    const d = await (await fetch(`${API}/api/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    document.getElementById('configNote').textContent = d.note || '已保存';
+  } catch { document.getElementById('configNote').textContent = '保存失败'; }
+}
+
+// 日志
+async function loadLogs() {
+  try {
+    const d = await (await fetch(`${API}/api/logs?lines=120`)).json();
+    document.getElementById('logList').innerHTML = (d.logs || []).map(l => {
+      let obj; try { obj = JSON.parse(l); } catch { return `<div class="logline">${escapeHtml(l)}</div>`; }
+      const t = obj.t ? obj.t.slice(11, 19) : '';
+      const cls = obj.level === 'error' ? 'err' : '';
+      return `<div class="logline"><span class="${cls}">${t} [${obj.scope}] ${escapeHtml(obj.msg || '')}</span></div>`;
+    }).reverse().join('');
+  } catch {}
+}
+
+function fmtUptime(s) {
+  if (s < 60) return Math.round(s) + 's';
+  if (s < 3600) return Math.round(s / 60) + 'm';
+  if (s < 86400) return Math.round(s / 3600) + 'h';
+  return Math.round(s / 86400) + 'd';
+}
+function escapeHtml(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+
+document.getElementById('sendBtn').addEventListener('click', sendMessage);
+document.getElementById('chatInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
+document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchMemory(); });
+document.getElementById('soulFile').addEventListener('change', loadSoulFile);
+document.getElementById('soulReload').addEventListener('click', loadSoulFile);
+document.getElementById('soulSave').addEventListener('click', saveSoul);
+document.getElementById('configSave').addEventListener('click', saveConfig);
+document.getElementById('logRefresh').addEventListener('click', loadLogs);
+
+fetchStatus();
+loadCommitments();
+setInterval(fetchStatus, 10000);
+setInterval(loadCommitments, 30000);
+setInterval(pollOutbox, 4000);
+</script>
+</body>
+</html>

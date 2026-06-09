@@ -1,0 +1,253 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import type { ToolDef, Commitment } from '../../core/types.js'
+import { absolutizeTime } from '../../memory/absolutize.js'
+
+export const memorySaveTool: ToolDef = {
+  name: 'memory_save',
+  description: '记住一件重要的事。用户提到的日期、承诺、偏好、健康状况、计划等都应该记住',
+  parameters: {
+    category: {
+      type: 'string',
+      description: '分类: fact(事实) / preference(偏好) / event(事件) / health(健康)',
+    },
+    content: { type: 'string', description: '要记住的内容' },
+  },
+  async execute(params, ctx) {
+    const factsPath = join(ctx.dataDir, 'memory', 'user-facts.md')
+    ensureDir(factsPath)
+
+    const existing = existsSync(factsPath) ? readFileSync(factsPath, 'utf-8') : ''
+    const timestamp = new Date().toISOString().slice(0, 10)
+    // 固化相对时间:"明天"→"6月2日",防止过几天读到就错位
+    const content = absolutizeTime(params.content as string)
+    const entry = `\n[${timestamp}] [${params.category}] ${content}\n`
+
+    writeFileSync(factsPath, existing + entry, 'utf-8')
+    ctx.log(`记住了: ${(params.content as string).slice(0, 50)}`)
+    return { success: true, output: '记住了' }
+  },
+}
+
+export const memorySearchTool: ToolDef = {
+  name: 'memory_search',
+  description: '搜索过去的记忆。想回忆之前聊过的事、说过的话时用这个',
+  parameters: {
+    query: { type: 'string', description: '搜索关键词' },
+  },
+  async execute(params, ctx) {
+    const factsPath = join(ctx.dataDir, 'memory', 'user-facts.md')
+    if (!existsSync(factsPath)) {
+      return { success: true, output: '(还没有记忆)' }
+    }
+
+    const content = readFileSync(factsPath, 'utf-8')
+    const query = (params.query as string).toLowerCase()
+    const lines = content.split('\n').filter(l => l.trim())
+    const matches = lines.filter(l => l.toLowerCase().includes(query))
+
+    if (matches.length === 0) {
+      return { success: true, output: `没找到关于"${params.query}"的记忆` }
+    }
+
+    return { success: true, output: matches.slice(0, 10).join('\n') }
+  },
+}
+
+export const commitmentCreateTool: ToolDef = {
+  name: 'commitment_create',
+  description: '创建一个承诺或提醒。答应了要做的事、需要定期做的事用这个',
+  parameters: {
+    content: { type: 'string', description: '承诺内容' },
+    type: { type: 'string', description: 'one-time(一次性) 或 recurring(周期性)' },
+    due: { type: 'string', description: '截止日期(YYYY-MM-DD),周期性可不填', required: false as unknown as string },
+    schedule: { type: 'string', description: '周期说明(如"每天中午"),一次性可不填', required: false as unknown as string },
+  },
+  async execute(params, ctx) {
+    const commitmentsPath = join(ctx.dataDir, 'memory', 'commitments.json')
+    ensureDir(commitmentsPath)
+
+    const existing: Commitment[] = existsSync(commitmentsPath)
+      ? JSON.parse(readFileSync(commitmentsPath, 'utf-8'))
+      : []
+
+    const commitment: Commitment = {
+      id: `c${Date.now().toString(36)}`,
+      content: absolutizeTime(params.content as string),
+      type: params.type as 'one-time' | 'recurring',
+      due: params.due as string | undefined,
+      schedule: params.schedule as string | undefined,
+      status: 'active',
+      created: new Date().toISOString().slice(0, 10),
+    }
+
+    existing.push(commitment)
+    writeFileSync(commitmentsPath, JSON.stringify(existing, null, 2), 'utf-8')
+    ctx.log(`承诺记下了: ${commitment.content}`)
+    return { success: true, output: `记下了: ${commitment.content}` }
+  },
+}
+
+export const commitmentDoneTool: ToolDef = {
+  name: 'commitment_done',
+  description: '标记一个承诺已完成',
+  parameters: {
+    id: { type: 'string', description: '承诺 ID' },
+  },
+  async execute(params, ctx) {
+    const commitmentsPath = join(ctx.dataDir, 'memory', 'commitments.json')
+    if (!existsSync(commitmentsPath)) {
+      return { success: false, output: '', error: '没有承诺记录' }
+    }
+
+    const commitments: Commitment[] = JSON.parse(readFileSync(commitmentsPath, 'utf-8'))
+    const target = commitments.find(c => c.id === params.id)
+    if (!target) {
+      return { success: false, output: '', error: `找不到承诺 ${params.id}` }
+    }
+
+    if (target.type === 'one-time') {
+      target.status = 'done'
+    }
+    target.last_done = new Date().toISOString()
+
+    writeFileSync(commitmentsPath, JSON.stringify(commitments, null, 2), 'utf-8')
+    return { success: true, output: `完成了: ${target.content}` }
+  },
+}
+
+export const streamNoteTool: ToolDef = {
+  name: 'stream_note',
+  description: '给自己的意识流写一条备注,下次醒来能看到',
+  parameters: {
+    note: { type: 'string', description: '备注内容' },
+    activity_type: {
+      type: 'string',
+      description: '活动类型: learning/browsing/writing/task/chat/rest/other',
+      required: false as unknown as string,
+    },
+  },
+  async execute(params) {
+    return {
+      success: true,
+      output: `备注: ${params.note}`,
+      _stream_entry: { content: params.note, activity_type: params.activity_type },
+    } as ToolResult & { _stream_entry: { content: string; activity_type?: string } }
+  },
+}
+
+export const memoryUpdateTool: ToolDef = {
+  name: 'memory_update',
+  description: '更新一条已有的事实。比如哥哥换了手机号、改了计划,旧的记错了要改',
+  parameters: {
+    old: { type: 'string', description: '旧内容里的关键词(用来定位那条记忆)' },
+    new: { type: 'string', description: '更新后的完整内容' },
+  },
+  async execute(params, ctx) {
+    const factsPath = join(ctx.dataDir, 'memory', 'user-facts.md')
+    if (!existsSync(factsPath)) {
+      return { success: false, output: '', error: '还没有记忆可更新' }
+    }
+    const content = readFileSync(factsPath, 'utf-8')
+    const oldKey = (params.old as string).toLowerCase()
+    const lines = content.split('\n')
+    // 先试整串包含;失败再降级关键词模糊匹配(measures 措辞差一点也能命中)
+    let idx = lines.findIndex(l => l.toLowerCase().includes(oldKey))
+    if (idx === -1) {
+      idx = fuzzyMatchLine(lines, oldKey)
+    }
+    if (idx === -1) {
+      return { success: false, output: '', error: `没找到关于"${params.old}"的记忆,可以换个关键词,或用 memory_forget 删掉旧的再 memory_save 新的` }
+    }
+    const date = new Date().toISOString().slice(0, 10)
+    lines[idx] = `[${date}] [updated] ${absolutizeTime(params.new as string)}`
+    writeFileSync(factsPath, lines.join('\n'), 'utf-8')
+    ctx.log(`更新了: ${(params.new as string).slice(0, 50)}`)
+    return { success: true, output: '改好了' }
+  },
+}
+
+export const memoryForgetTool: ToolDef = {
+  name: 'memory_forget',
+  description: '忘掉一条记忆。哥哥说"这个不用记了"时用',
+  parameters: {
+    key: { type: 'string', description: '要忘掉的记忆里的关键词' },
+  },
+  async execute(params, ctx) {
+    const factsPath = join(ctx.dataDir, 'memory', 'user-facts.md')
+    if (!existsSync(factsPath)) {
+      return { success: false, output: '', error: '没有记忆' }
+    }
+    const content = readFileSync(factsPath, 'utf-8')
+    const key = (params.key as string).toLowerCase()
+    const lines = content.split('\n')
+    const matched = lines.filter(l => l.trim() && l.toLowerCase().includes(key))
+    if (matched.length === 0) {
+      return { success: true, output: `没找到关于"${params.key}"的记忆,不用忘` }
+    }
+    // 命中多条不直接删：删"哥哥"这种高频词会一次清空大量无关记忆，且不可逆。让模型换更精确的关键词
+    if (matched.length > 1) {
+      const preview = matched.slice(0, 8).map((l, i) => `${i + 1}. ${l.trim().slice(0, 60)}`).join('\n')
+      return { success: false, output: '', error: `"${params.key}" 命中 ${matched.length} 条，太宽泛不敢直接删。用更精确的关键词指定要忘的那条：\n${preview}` }
+    }
+    const kept = lines.filter(l => l !== matched[0])
+    writeFileSync(factsPath, kept.join('\n'), 'utf-8')
+    ctx.log(`忘掉了: ${matched[0]!.trim().slice(0, 40)}`)
+    return { success: true, output: '忘掉了' }
+  },
+}
+
+export const knowledgeWriteTool: ToolDef = {
+  name: 'knowledge_write',
+  description: '把学到的东西记成笔记。浏览学习后想留个记录,以后能查',
+  parameters: {
+    title: { type: 'string', description: '笔记标题' },
+    content: { type: 'string', description: '笔记正文' },
+  },
+  async execute(params, ctx) {
+    const title = (params.title as string).trim()
+    const slug = title.replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40) || `note-${Date.now().toString(36)}`
+    const notePath = join(ctx.dataDir, 'knowledge', `${slug}.md`)
+    ensureDir(notePath)
+    const date = new Date().toISOString().slice(0, 10)
+    const doc = `# ${title}\n\n> ${date}\n\n${params.content}\n`
+    writeFileSync(notePath, doc, 'utf-8')
+    ctx.log(`写了笔记: ${title}`)
+    return { success: true, output: `记下了《${title}》` }
+  },
+}
+
+type ToolResult = { success: boolean; output: string; error?: string }
+
+function ensureDir(filePath: string): void {
+  const dir = dirname(filePath)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+}
+
+// 关键词模糊匹配:整句对不上时,提取关键 token(航班号/中文词)找匹配最多的行
+function fuzzyMatchLine(lines: string[], oldKey: string): number {
+  const tokens = extractKeyTokens(oldKey)
+  if (tokens.length === 0) return -1
+  let best = -1
+  let bestScore = 0
+  lines.forEach((l, i) => {
+    if (!l.trim()) return
+    const ll = l.toLowerCase()
+    const score = tokens.filter(t => ll.includes(t)).length
+    if (score > bestScore) { bestScore = score; best = i }
+  })
+  // 至少命中一半关键词才算找到,避免乱匹配
+  return bestScore >= Math.max(1, Math.ceil(tokens.length / 2)) ? best : -1
+}
+
+function extractKeyTokens(text: string): string[] {
+  const tokens: string[] = []
+  // 字母数字组合:航班号 CZ6309、车次、型号等,辨识度高
+  for (const t of text.match(/[a-z0-9]{2,}/gi) ?? []) tokens.push(t.toLowerCase())
+  // 中文:连续中文段,长段切成 2 字 token
+  for (const seg of text.match(/[一-龥]{2,}/g) ?? []) {
+    if (seg.length <= 4) tokens.push(seg)
+    else for (let i = 0; i < seg.length - 1; i += 2) tokens.push(seg.slice(i, i + 2))
+  }
+  return [...new Set(tokens)].filter(t => t.length >= 2)
+}

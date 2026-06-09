@@ -1,0 +1,40 @@
+{
+  "name": "mu-agent",
+  "version": "0.2.0",
+  "description": "沐 — 个人自主代理",
+  "type": "module",
+  "bin": {
+    "mu": "src/cli.ts"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/mu.ts",
+    "start": "tsx src/mu.ts",
+    "mu": "tsx src/cli.ts",
+    "build": "tsup src/mu.ts --format esm --dts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "better-sqlite3": "^11.8.0",
+    "yaml": "^2.7.0",
+    "chalk": "^5.4.0",
+    "chokidar": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "tsup": "^8.4.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "@esbuild/*"
+    ]
+  }
+}
