@@ -62,6 +62,26 @@ export const memorySearchTool: ToolDef = {
           out.push(`[${date}]${who ? ` ${who}:` : ''} ${r.content.slice(0, 100).replace(/\n/g, ' ')}`)
         }
       }
+      // 每日摘要(有些事只在摘要里)
+      const sums = ctx.store.searchDailySummaries(query, 2)
+      if (sums.length > 0) {
+        out.push('\n[那几天的摘要]')
+        for (const s of sums) out.push(`[${s.date}] ${s.summary.slice(0, 100)}`)
+      }
+    }
+
+    // 第三路:重要档案(婷婷的事/我们之间/哥哥说过的)。这些在 xiaomu-home 里,
+    // 不进 episodes,以前任何检索都摸不到——"香港"这种关键事实就藏在这里
+    const archives = ['婷婷的事-哥哥给我的记录.md', '我们之间.md', '哥哥说过的.md', '近期记忆.md']
+    for (const name of archives) {
+      const p = join(ctx.dataDir, 'xiaomu-home', name)
+      if (!existsSync(p)) continue
+      const matched = readFileSync(p, 'utf-8').split('\n')
+        .filter(l => l.trim() && l.includes(query))
+      if (matched.length > 0) {
+        out.push(`\n[档案·${name.replace('.md', '')}]`)
+        out.push(...matched.slice(0, 3).map(l => l.trim().slice(0, 110)))
+      }
     }
 
     if (out.length === 0) {

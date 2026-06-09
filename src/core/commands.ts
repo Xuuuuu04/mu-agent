@@ -103,13 +103,24 @@ function todoText(deps: CommandDeps): string {
 
 function memoryText(deps: CommandDeps, query: string): string {
   if (!query) return '想翻什么? 比如 /memory 深圳'
+  const lines: string[] = []
   const rows = deps.store.searchHybrid(query, 6)
-  if (rows.length === 0) return `没找到关于"${query}"的记忆`
-  const lines = rows.map(r => {
+  for (const r of rows) {
     const t = relativeTime(new Date(r.timestamp), new Date())
     const who = r.role === 'user' ? '你' : '我'
-    return `[${t}] ${who}: ${r.content.slice(0, 50)}`
-  })
+    lines.push(`[${t}] ${who}: ${r.content.slice(0, 50)}`)
+  }
+  // 摘要和档案也搜(episodes 之外的两个召回盲区)
+  for (const s of deps.store.searchDailySummaries(query, 2)) {
+    lines.push(`[${s.date} 摘要] ${s.summary.slice(0, 60)}`)
+  }
+  for (const name of ['婷婷的事-哥哥给我的记录.md', '我们之间.md', '哥哥说过的.md']) {
+    const p = join(deps.dataDir, 'xiaomu-home', name)
+    if (!existsSync(p)) continue
+    const hit = readFileSync(p, 'utf-8').split('\n').find(l => l.trim() && l.includes(query))
+    if (hit) lines.push(`[档案] ${hit.trim().slice(0, 60)}`)
+  }
+  if (lines.length === 0) return `没找到关于"${query}"的记忆`
   return `关于"${query}":\n` + lines.join('\n')
 }
 

@@ -246,6 +246,15 @@ export class MemoryStore {
     return this.db.prepare('SELECT * FROM daily_summaries WHERE date = ?').get(date) as DailySummaryRow | undefined
   }
 
+  // 每日摘要也要能搜:6/5 "诗集48页"这种信息只在摘要里,episodes 搜不到
+  searchDailySummaries(term: string, limit = 3): DailySummaryRow[] {
+    const escaped = term.replace(/[\\%_]/g, c => `\\${c}`)
+    return this.db.prepare(`
+      SELECT * FROM daily_summaries WHERE summary LIKE ? ESCAPE '\\' OR key_facts LIKE ? ESCAPE '\\'
+      ORDER BY date DESC LIMIT ?
+    `).all(`%${escaped}%`, `%${escaped}%`, limit) as DailySummaryRow[]
+  }
+
   getRecentDailySummaries(days = 7): DailySummaryRow[] {
     return this.db.prepare(`
       SELECT * FROM daily_summaries ORDER BY date DESC LIMIT ?
