@@ -10,3 +10,4 @@ config/config.yaml
 .opencode/
 __pycache__/
 *.pyc
+xpark-mirror/

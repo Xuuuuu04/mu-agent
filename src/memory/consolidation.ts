@@ -45,12 +45,19 @@ export class MemoryConsolidation {
       return `[${time}] ${role}: ${ep.content}`
     }).join('\n')
 
+    // 把已有记忆给模型对照,否则同一事实每次整合都重新提取一遍
+    // (清理前 user-facts 里"6/2 答辩"重复了 9 次,就是没对照的结果)
+    const factsPath = join(this.dataDir, 'memory', 'user-facts.md')
+    const existingFacts = existsSync(factsPath)
+      ? readFileSync(factsPath, 'utf-8').slice(-3000)
+      : '(还没有任何记忆)'
+
     try {
       const response = await this.router.chat({
         system: CONSOLIDATION_PROMPT,
         messages: [{
           role: 'user',
-          content: `以下是最近的对话记录,请提取重要信息:\n\n${conversationText}`,
+          content: `[已有记忆(最近部分)]\n${existingFacts}\n\n[最近的对话记录]\n${conversationText}\n\n请按格式提取——只要已有记忆里没有的新信息:`,
         }],
         max_tokens: 2000,
       })
@@ -167,7 +174,9 @@ export class MemoryConsolidation {
         currentSection = 'mood'
         mood = trimmed.replace(/^\[情绪\]\s*|^情绪:\s*/, '')
       } else if (trimmed.startsWith('- ') && currentSection === 'facts') {
-        facts.push(trimmed.slice(2))
+        const fact = trimmed.slice(2).trim()
+        // "无/没有新事实"这种解释性输出不是事实,别存(曾出现"[consolidation] 无(用户仅回复了…)")
+        if (fact && !/^无([(（]|$)|^没有/.test(fact)) facts.push(fact)
       } else if (currentSection === 'summary' && trimmed && !summary) {
         summary = trimmed
       } else if (currentSection === 'mood' && trimmed && !mood) {
@@ -192,23 +201,26 @@ export class MemoryConsolidation {
   }
 }
 
-const CONSOLIDATION_PROMPT = `你是一个记忆整合助手。你的任务是从对话记录中提取重要信息。
+const CONSOLIDATION_PROMPT = `你是沐的记忆整合助手,帮她从对话记录里提取值得长期记住的新信息。
 
 输出格式:
 
 [事实]
-- 用户提到的新事实(日期、计划、偏好、健康等)
+- 哥哥提到的新事实(日期、计划、偏好、健康等)
 - 只提取值得长期记忆的信息,跳过闲聊
 
 [摘要]
 一两句话概括这段对话的主要内容
 
 [情绪]
-这段对话中用户的情绪变化轨迹
+这段对话中哥哥的情绪变化轨迹
 
-注意:
-- 只提取用户明确说过的事实,不要推测
-- 如果没有值得记忆的事实,事实部分留空
-- 摘要要简洁,不要重复原文
-- **日期一律用绝对日期(几月几号),绝不用"明天/后天/昨天/下周"这种相对词**(过几天再读就错位了)
-- 如果新事实和旧记忆矛盾(比如计划变了),在事实里注明"(更新:原来X,现在Y)"`
+硬规则:
+- 会给你"已有记忆"做对照:已经记过的事实绝对不要再输出,换个说法也不行。宁可事实段留空
+- 称呼他"哥哥",不要叫"用户"。口吻是沐自己在记事,口语化,别用书面腔
+- 只提取哥哥明确说过的事实,不要推测,不要把沐自己说的话当成事实
+- 瞬时状态不要存:GPU温度、磁盘空间、当天天气这种过几天就没意义的,跳过
+- 日期一律用绝对日期(几月几号),绝不用"明天/后天/昨天/下周"这种相对词(过几天再读就错位了)
+- 新事实和旧记忆矛盾时(比如计划变了),写成"(更新:原来X,现在Y)"
+- 没有新事实就把事实段留空,不要写"无"或解释为什么没有
+- 不用 markdown 加粗/列表符号以外的格式`

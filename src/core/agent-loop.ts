@@ -8,6 +8,7 @@ import type { MemoryConsolidation } from '../memory/consolidation.js'
 import { EmbeddingService } from '../memory/embedding.js'
 import { extractEntities } from '../memory/entities.js'
 import { updateMood } from '../memory/layers/mood.js'
+import { guardStyle } from '../soul/style-guard.js'
 import { log } from './logger.js'
 import { tryCommand } from './commands.js'
 
@@ -190,6 +191,15 @@ export class AgentLoop {
             error: result.success ? undefined : result.error,
           })
 
+          // stream_note 等工具用 _stream_entry 给意识流留备忘 —— 这里是唯一的消费点,
+          // 不接的话她调了 stream_note 也一条都落不了盘(06-09 连调 6 次全丢的事故)
+          const se = (result as typeof result & {
+            _stream_entry?: { content: string; activity_type?: string }
+          })._stream_entry
+          if (se?.content) {
+            this.assembler.streamLayer.append(se.content, se.activity_type)
+          }
+
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,
@@ -257,7 +267,10 @@ export class AgentLoop {
       this.assembler.streamLayer.append(streamEntry.content, streamEntry.activity)
     }
 
-    const cleaned = this.cleanResponse(response)
+    // style-guard 只挡发给用户的消息,自主 cycle 的内心独白没人挡,
+    // markdown 粗体曾直接进了长期记忆(9 条)——入库前统一清一遍
+    const rawCleaned = this.cleanResponse(response)
+    const cleaned = rawCleaned ? guardStyle(rawCleaned).cleaned : ''
     if (cleaned) {
       this.store?.insertEpisode({
         id: `ep_${Date.now().toString(36)}_a`,
@@ -326,12 +339,16 @@ export class AgentLoop {
   }
 
   private extractStreamEntry(text: string): { content: string; activity?: string } | null {
-    if (!text || text.length < 5) return null
-    const clean = text.replace(/\[WAKE:[^\]\n]*\]?/g, '').replace(/\[MOOD:[^\]\n]*\]?/g, '').trim()
-    const summary = clean.length > 100
-      ? clean.slice(0, 100).replace(/\n/g, ' ')
-      : clean.replace(/\n/g, ' ')
-    return { content: summary, activity: 'chat' }
+    if (!text) return null
+    // 长度判断必须在清洗之后:纯 [WAKE][MOOD] 指令的回复清洗完是空的,
+    // 旧逻辑在清洗前判长度,导致意识流里出现空白条目
+    const clean = text
+      .replace(/\[WAKE:[^\]\n]*\]?/g, '')
+      .replace(/\[MOOD:[^\]\n]*\]?/g, '')
+      .replace(/\n+/g, ' ')
+      .trim()
+    if (clean.length < 5) return null
+    return { content: truncateAtBoundary(clean, 200), activity: 'chat' }
   }
 
   private extractWakeDirective(text: string): { seconds: number; reason: string; activity_type: string } | null {
@@ -391,6 +408,17 @@ function isSafeStart(m: ChatMessage): boolean {
   if (m.role !== 'user') return false
   if (typeof m.content === 'string') return true
   return !m.content.some(b => b.type === 'tool_result')
+}
+
+// 意识流截断:超长时尽量在标点/空格处断,别把一句话腰斩("也可能已"这种)
+function truncateAtBoundary(text: string, max: number): string {
+  if (text.length <= max) return text
+  const slice = text.slice(0, max)
+  const boundary = Math.max(
+    slice.lastIndexOf(' '),
+    ...['。', '!', '?', '!', '?', ',', ',', ' ', '…'].map(p => slice.lastIndexOf(p)),
+  )
+  return boundary > max * 0.6 ? slice.slice(0, boundary + 1).trim() : slice
 }
 
 function jsonOrNull(arr: string[]): string | null {

@@ -16,7 +16,8 @@ export interface CommandDeps {
 // 拦截 / 命令。是命令就直接读记忆系统返回结果(不走 LLM);不是命令返回 null。
 // 命令对应六层记忆的不同层:/new 清 L2 会话但保留 L3/L4 长期记忆,/todo 读 L3 承诺,等。
 export function tryCommand(text: string, deps: CommandDeps): string | null {
-  const t = (text || '').trim()
+  // 全角"／"也认(手机输入法常见,曾有"/new"透传进 LLM 让沐一脸懵的穿帮)
+  const t = (text || '').trim().replace(/^／/, '/')
   if (!t.startsWith('/')) return null
 
   const parts = t.slice(1).split(/\s+/)

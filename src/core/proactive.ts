@@ -25,6 +25,8 @@ export class ProactiveManager {
   private lastMissingDay = ''             // 想念触发当天计数
   private missingCountToday = 0
   private lastTriggerHadMissing = false    // 本次触发是否含"想念",决定 recordSent 是否计入想念配额
+  private firedDay = ''                    // 承诺触发去重:同一承诺每天最多唤醒一次
+  private firedCommitments = new Set<string>()
   private stateFile: string                // 频率/计数落盘，扛 pm2 重启
 
   constructor(config: MuConfig, dataDir: string) {
@@ -78,6 +80,16 @@ export class ProactiveManager {
 
     // 记下这次触发是否含想念，recordSent 时据此决定要不要计入想念配额
     this.lastTriggerHadMissing = reasons.some(r => r.startsWith('想哥哥了'))
+
+    // 本次触发涉及的承诺记下来,今天不再为同一条反复唤醒
+    // (06-09 事故:5 条过期 active 承诺让 evaluate 每 10 分钟扣一次扳机)
+    const today = localDateStr()
+    if (this.firedDay !== today) { this.firedDay = today; this.firedCommitments.clear() }
+    for (const r of reasons) {
+      if (r.startsWith('承诺到期: ')) this.firedCommitments.add(r.slice('承诺到期: '.length))
+    }
+    this.saveState()
+
     this.fire({ type: 'system_event', event: `主动通信触发: ${reasons.join('; ')}` })
   }
 
@@ -109,11 +121,17 @@ export class ProactiveManager {
       const commitments = JSON.parse(readFileSync(path, 'utf-8')) as Commitment[]
       const now = new Date()
       const todayStr = localDateStr(now)
+      const today = this.firedDay === todayStr ? this.firedCommitments : new Set<string>()
       const out: string[] = []
       for (const c of commitments) {
         if (c.status !== 'active') continue
+        if (today.has(c.content)) continue  // 今天已为它唤醒过
         if (c.type === 'one-time' && c.due) {
-          if (c.due <= todayStr) out.push(c.content)
+          // 过期超 2 天还没做的不再催(没人标 done 的烂尾承诺会永远挂着,
+          // 06-09 就是 5 条这种让 proactive 无限扣扳机);它仍会出现在
+          // temporal 的待办提醒里("已过期X天!"),留给沐自己清理
+          const overdueDays = (now.getTime() - new Date(c.due).getTime()) / 86400_000
+          if (c.due <= todayStr && overdueDays <= 2) out.push(c.content)
         } else if (c.type === 'recurring') {
           // 今天还没做过就提醒(粗略判断:last_done 不是今天)
           const lastDoneDay = c.last_done?.slice(0, 10)
@@ -156,6 +174,8 @@ export class ProactiveManager {
       this.unrepliedStreak = s.unrepliedStreak ?? 0
       this.lastMissingDay = s.lastMissingDay ?? ''
       this.missingCountToday = s.missingCountToday ?? 0
+      this.firedDay = s.firedDay ?? ''
+      this.firedCommitments = new Set(Array.isArray(s.firedCommitments) ? s.firedCommitments : [])
     } catch { /* 状态文件坏了就当全新开始 */ }
   }
 
@@ -167,6 +187,8 @@ export class ProactiveManager {
         unrepliedStreak: this.unrepliedStreak,
         lastMissingDay: this.lastMissingDay,
         missingCountToday: this.missingCountToday,
+        firedDay: this.firedDay,
+        firedCommitments: [...this.firedCommitments],
       }))
     } catch { /* 落盘失败不影响主流程 */ }
   }

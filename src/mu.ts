@@ -218,12 +218,39 @@ async function main() {
   let processing = false
   const queue: WakeTrigger[] = []
 
+  // 哥哥连发的几条消息合并进一个 cycle,避免逐条全量回应(重逢戏码三连发的预防针)。
+  // 被合并的消息立刻回空响应,释放 bridge 的同步等待(不然它干等 110s)。
+  const mergeQueuedMessages = async (trigger: WakeTrigger): Promise<void> => {
+    if (trigger.type !== 'message' || trigger.message.content.type !== 'text') return
+    const extra: string[] = []
+    while (queue.length > 0) {
+      const next = queue[0]!
+      if (next.type !== 'message'
+        || next.message.sender.id !== trigger.message.sender.id
+        || next.message.content.type !== 'text') break
+      queue.shift()
+      extra.push(next.message.content.text)
+      if (next.message.source === 'webhook') {
+        await webhook.send({
+          target: { source: 'webhook', chat_id: next.message.sender.id },
+          content: [{ type: 'text', text: '' }],
+          reply_to: next.message.id,
+        })
+      }
+    }
+    if (extra.length > 0) {
+      trigger.message.content.text += '\n' + extra.join('\n')
+      console.log(`  [queue] 合并了 ${extra.length} 条连发消息`)
+    }
+  }
+
   const processQueue = async () => {
     if (processing || queue.length === 0) return
     processing = true
 
     const trigger = queue.shift()!
     try {
+      await mergeQueuedMessages(trigger)
       const result = await loop.runCycle(trigger)
 
       // 只有"消息触发"的 cycle 才把回复发给用户(这是在回他的话)。
