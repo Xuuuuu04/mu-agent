@@ -22,7 +22,7 @@ import { messageSendTool } from './tools/builtin/message-send.js'
 import { scheduleWakeTool } from './tools/builtin/schedule-wake.js'
 import {
   memorySaveTool, memorySearchTool, memoryUpdateTool, memoryForgetTool, knowledgeWriteTool,
-  commitmentCreateTool, commitmentDoneTool, streamNoteTool,
+  commitmentCreateTool, commitmentDoneTool, streamNoteTool, diaryWriteTool,
 } from './tools/builtin/memory-ops.js'
 import { toolCreateTool } from './tools/builtin/tool-create.js'
 import { HotReloader } from './tools/hot-reload.js'
@@ -60,7 +60,7 @@ async function main() {
   for (const t of [fileReadTool, fileWriteTool, fileListTool, shellExecTool, webFetchTool, webSearchTool,
     messageSendTool, scheduleWakeTool,
     memorySaveTool, memorySearchTool, memoryUpdateTool, memoryForgetTool, knowledgeWriteTool,
-    commitmentCreateTool, commitmentDoneTool, streamNoteTool, toolCreateTool]) {
+    commitmentCreateTool, commitmentDoneTool, streamNoteTool, diaryWriteTool, toolCreateTool]) {
     tools.register(t, { reserved: true })
   }
   console.log(`[init] ${tools.size} 个内置工具已注册`)

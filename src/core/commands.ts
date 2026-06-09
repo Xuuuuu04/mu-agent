@@ -60,6 +60,10 @@ function statusText(deps: CommandDeps): string {
   lines.push(`心情: ${mood?.current ?? 'calm'}${mood?.reason ? ` — ${mood.reason}` : ''}`)
   lines.push(`记忆: ${deps.store.getEpisodeCount()} 条`)
   lines.push(`已经醒着: ${fmtDuration(deps.uptimeSeconds())}`)
+  const tok = deps.store.getTodayTokenUsage()
+  if (tok.calls > 0) {
+    lines.push(`今天动了 ${tok.calls} 次脑子 (${Math.round(tok.input / 1000)}k+${Math.round(tok.output / 1000)}k)`)
+  }
   const todoCount = activeCommitments(deps.dataDir).length
   if (todoCount > 0) lines.push(`待办: ${todoCount} 件`)
   const sched = deps.scheduler.getStatus()

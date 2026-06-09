@@ -118,12 +118,48 @@ def _msg_seq() -> int:
     return (int(time.time()) ^ int(uuid.uuid4().hex[:4], 16)) % 65536
 
 
-async def _send_c2c(openid: str, text: str, reply_to: "str | None" = None) -> dict:
-    """发私信。reply_to(收到的 msg_id)带上 = 被动回复(5 分钟内免费);不带 = 主动消息。"""
-    body = {"content": text[:MAX_LEN], "msg_type": 0, "msg_seq": _msg_seq()}
+async def _send_c2c(openid: str, text: str, reply_to: "str | None" = None, seq: "int | None" = None) -> dict:
+    """发私信。reply_to(收到的 msg_id)带上 = 被动回复(5 分钟内免费);不带 = 主动消息。
+    seq: 同一 msg_id 被动回复多条时用 1-5 区分(QQ 上限 5 条)。"""
+    body = {"content": text[:MAX_LEN], "msg_type": 0, "msg_seq": seq if seq else _msg_seq()}
     if reply_to:
         body["msg_id"] = reply_to
     return await _api("POST", f"/v2/users/{openid}/messages", body)
+
+
+async def _send_reply_chunks(openid: str, reply: str, msg_id: str) -> None:
+    """按空行把回复拆成多条发(她的风格本来就是一个想法一条),像真人连发。
+    QQ 同一 msg_id 被动回复最多 5 条:前 4 条独立发,剩余合并进第 5 条。"""
+    chunks = [c.strip() for c in reply.split("\n\n") if c.strip()]
+    if len(chunks) <= 1:
+        await _send_c2c(openid, reply, reply_to=msg_id, seq=1)
+        return
+    if len(chunks) > 5:
+        chunks = chunks[:4] + ["\n\n".join(chunks[4:])]
+    for j, ch in enumerate(chunks):
+        await _send_c2c(openid, ch, reply_to=msg_id, seq=j + 1)
+        if j < len(chunks) - 1:
+            await asyncio.sleep(1.2)
+
+
+def _describe_image(url: str) -> str:
+    """下载图片,用 minimax 视觉描述成文字给沐(她"看"图的眼睛,和手机.sh 同款)。"""
+    import subprocess, tempfile
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            path = f.name
+        urllib.request.urlretrieve(url, path)
+        out = subprocess.run(
+            ["/home/xpark/.npm-global/bin/mmx", "vision", "describe", "--image", path,
+             "--prompt", "描述这张图片。如果是食物:有什么菜、大概的量、主要营养构成。"
+                         "如果是截图:界面内容和上面的文字。其他:你看到了什么。简洁中文,别用markdown。",
+             "--quiet"],
+            capture_output=True, text=True, timeout=60,
+        )
+        desc = (out.stdout or "").strip()
+        return desc[:800] if desc else "(图片看不清)"
+    except Exception as exc:  # noqa: BLE001
+        return f"(图片没看成: {exc})"
 
 
 def _ask_mu(text: str, sender: str) -> str:
@@ -155,20 +191,32 @@ async def _handle_c2c(d: dict):
     openid = str((d.get("author") or {}).get("user_openid") or "").strip()
     content = str(d.get("content") or "").strip()
     msg_id = str(d.get("id") or "").strip()
-    if not openid or not content:
+    # 图片消息:content 可能为空但 attachments 有图,转成文字描述给沐(她的眼睛)
+    atts = d.get("attachments") or []
+    img_urls = [a.get("url") for a in atts
+                if str(a.get("content_type", "")).startswith("image") and a.get("url")]
+    if not openid or (not content and not img_urls):
         return
     if MASTER_OPENID and openid != MASTER_OPENID:
         print(f"[qq-bridge] 忽略陌生人 {openid[:8]} 的消息", flush=True)
         return
     _last_peer = openid
     _save_peer(openid)
+
+    if img_urls:
+        loop = asyncio.get_event_loop()
+        descs = []
+        for u in img_urls[:3]:
+            descs.append(await loop.run_in_executor(None, _describe_image, u))
+        img_text = "\n".join(f"[哥哥发来一张图片,你看到的是: {dsc}]" for dsc in descs)
+        content = f"{img_text}\n{content}".strip() if content else img_text
     print(f"[qq-bridge] 收到 {openid[:8]}: {content[:40]}", flush=True)
 
     reply = await asyncio.get_event_loop().run_in_executor(None, _ask_mu, content, openid)
     if not reply:
         return
     try:
-        await _send_c2c(openid, reply, reply_to=msg_id)  # 被动回复带 msg_id
+        await _send_reply_chunks(openid, reply, msg_id)  # 被动回复,按段拆多条
         print(f"[qq-bridge] 回复 {openid[:8]}", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[qq-bridge] 回复失败: {exc}", flush=True)

@@ -252,6 +252,15 @@ export class MemoryStore {
     `).all(days) as DailySummaryRow[]
   }
 
+  // 今天(UTC)烧了多少 token,/status 显示用
+  getTodayTokenUsage(): { input: number; output: number; calls: number } {
+    const today = new Date().toISOString().slice(0, 10)
+    return this.db.prepare(`
+      SELECT COALESCE(SUM(input_tokens),0) as input, COALESCE(SUM(output_tokens),0) as output, COUNT(*) as calls
+      FROM token_usage WHERE timestamp >= ?
+    `).get(today) as { input: number; output: number; calls: number }
+  }
+
   logTokenUsage(data: { input: number; output: number; cache_read: number; model: string; trigger: string; duration: number }): void {
     this.db.prepare(`
       INSERT INTO token_usage (timestamp, input_tokens, output_tokens, cache_read_tokens, model, trigger_type, duration_ms)
