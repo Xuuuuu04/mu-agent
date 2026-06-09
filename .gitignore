@@ -13,3 +13,5 @@ __pycache__/
 xpark-mirror/
 记录.txt
 *.私密
+.playwright-mcp/
+*.png
