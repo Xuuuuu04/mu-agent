@@ -11,3 +11,5 @@ config/config.yaml
 __pycache__/
 *.pyc
 xpark-mirror/
+记录.txt
+*.私密

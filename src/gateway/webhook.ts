@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage as HttpReq, type ServerResponse } from 'node:http'
-import { readFileSync, existsSync, writeFileSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname, basename, sep } from 'node:path'
 import YAML from 'yaml'
 import type { IncomingMessage, GatewayAdapter, OutgoingMessage } from '../core/types.js'
@@ -133,6 +133,11 @@ export class WebhookGateway implements GatewayAdapter {
 
     try {
       if (p === '/api/status' && m === 'GET') this.handleStatus(res)
+      else if (p === '/api/stream' && m === 'GET') this.handleStream(res)
+      else if (p === '/api/recent-notes' && m === 'GET') this.handleRecentNotes(res)
+      else if (p === '/api/diary-latest' && m === 'GET') this.handleDiaryLatest(res)
+      else if (p === '/api/guestbook' && m === 'GET') this.handleGuestbookGet(res)
+      else if (p === '/api/guestbook' && m === 'POST') await this.handleGuestbookPost(req, res)
       else if (p === '/api/memory' && m === 'GET') this.handleMemoryQuery(res, url.searchParams)
       else if (p === '/api/episodes' && m === 'GET') this.handleEpisodes(res, url.searchParams)
       else if (p === '/api/outbox' && m === 'GET') this.handleOutbox(res, url.searchParams)
@@ -314,6 +319,70 @@ export class WebhookGateway implements GatewayAdapter {
     const data = readFileSync(filePath)
     res.writeHead(200, { 'Content-Type': mime })
     res.end(data)
+  }
+
+  // 她的面板用:意识流(签名取最后一条非空内容)
+  private handleStream(res: ServerResponse): void {
+    const entries = this.readJsonFile('memory/stream.md')
+    this.json(res, { entries: Array.isArray(entries) ? entries.slice(-8) : [] })
+  }
+
+  // 她的面板用:最近的知识笔记(标题 + 首段摘录)
+  private handleRecentNotes(res: ServerResponse): void {
+    if (!this.opts.dataDir) { this.json(res, { notes: [] }); return }
+    const dir = join(this.opts.dataDir, 'knowledge')
+    if (!existsSync(dir)) { this.json(res, { notes: [] }); return }
+    const files = readdirSync(dir)
+      .filter(f => f.endsWith('.md'))
+      .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, 5)
+    const notes = files.map(({ f, mtime }) => {
+      const raw = readFileSync(join(dir, f), 'utf-8')
+      const body = raw.replace(/^#[^\n]*\n/, '').replace(/^>[^\n]*\n/gm, '').trim()
+      const firstPara = body.split(/\n\s*\n/)[0]?.replace(/\n/g, ' ').trim() ?? ''
+      return {
+        title: f.replace(/\.md$/, '').replace(/^wander-/, '').replace(/-\d{4}-\d{2}-\d{2}$/, ''),
+        excerpt: firstPara.slice(0, 120),
+        date: new Date(mtime).toISOString().slice(0, 10),
+      }
+    })
+    this.json(res, { notes })
+  }
+
+  // 她的面板用:日记最后一段(最近在写什么)
+  private handleDiaryLatest(res: ServerResponse): void {
+    if (!this.opts.dataDir) { this.json(res, { entry: null }); return }
+    const path = join(this.opts.dataDir, 'memory', '日记.md')
+    if (!existsSync(path)) { this.json(res, { entry: null }); return }
+    const raw = readFileSync(path, 'utf-8')
+    const sections = raw.split(/^## /m).filter(s => s.trim())
+    const last = sections[sections.length - 1]
+    if (!last) { this.json(res, { entry: null }); return }
+    const [header, ...body] = last.split('\n')
+    this.json(res, { entry: { date: header?.trim(), text: body.join('\n').trim().slice(0, 400) } })
+  }
+
+  private handleGuestbookGet(res: ServerResponse): void {
+    const data = this.readJsonFile('memory/留言板.json')
+    this.json(res, { messages: Array.isArray(data) ? data.slice(-20) : [] })
+  }
+
+  // 留言会写进她家的留言板,并立刻作为事件唤醒她——有人来看她了,她该知道
+  private async handleGuestbookPost(req: HttpReq, res: ServerResponse): Promise<void> {
+    if (!this.opts.dataDir) { this.json(res, { error: 'no data dir' }, 500); return }
+    const body = JSON.parse(await readBody(req)) as { name?: string; text?: string }
+    const text = (body.text ?? '').trim().slice(0, 500)
+    if (!text) { this.json(res, { error: 'empty' }, 400); return }
+    const name = (body.name ?? '访客').trim().slice(0, 20) || '访客'
+    const path = join(this.opts.dataDir, 'memory', '留言板.json')
+    const list = (() => {
+      try { return JSON.parse(readFileSync(path, 'utf-8')) as unknown[] } catch { return [] }
+    })()
+    list.push({ name, text, time: new Date().toISOString() })
+    writeFileSync(path, JSON.stringify(list.slice(-100), null, 2), 'utf-8')
+    this.eventHandler?.(`留言板有新留言,${name}说: ${text}`, { name, text })
+    this.json(res, { ok: true })
   }
 
   private readMood(): unknown {
