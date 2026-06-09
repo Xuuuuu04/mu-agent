@@ -269,7 +269,14 @@ async function main() {
         }
 
         if (trigger.message.source === 'webhook') {
-          await webhook.send(outMsg)
+          if (webhook.hasPending(trigger.message.id)) {
+            await webhook.send(outMsg)
+          } else {
+            // GLM 跑太久,bridge 的同步窗口(110s)已经关了——回复转 QQ 主动推,
+            // 不能让她说的话消失(之前这条路径只有一行注释,没有实现,回复会蒸发)
+            console.log('  [deliver] 同步窗口已过,回复转主动推送')
+            await deliverToUser(cleaned)
+          }
         } else {
           await cli.send(outMsg)
         }
@@ -328,6 +335,7 @@ async function main() {
   proactive.start()
 
   scheduler.startCronFallback()
+  scheduler.restoreWake()   // 重启前落盘的闹钟接回来,部署不再偷走她的睡醒
   cli.startInteractive()
 
   const shutdown = () => {

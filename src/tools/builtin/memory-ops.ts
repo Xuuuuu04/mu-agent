@@ -31,26 +31,43 @@ export const memorySaveTool: ToolDef = {
 
 export const memorySearchTool: ToolDef = {
   name: 'memory_search',
-  description: '搜索过去的记忆。想回忆之前聊过的事、说过的话时用这个',
+  description: '搜索过去的记忆。想回忆之前聊过的事、说过的话时用这个(事实和对话记录都会搜)',
   parameters: {
     query: { type: 'string', description: '搜索关键词' },
   },
   async execute(params, ctx) {
+    const query = (params.query as string)
+    const out: string[] = []
+
+    // 第一路:长期事实(user-facts)
     const factsPath = join(ctx.dataDir, 'memory', 'user-facts.md')
-    if (!existsSync(factsPath)) {
-      return { success: true, output: '(还没有记忆)' }
+    if (existsSync(factsPath)) {
+      const lines = readFileSync(factsPath, 'utf-8').split('\n').filter(l => l.trim())
+      const matches = lines.filter(l => l.toLowerCase().includes(query.toLowerCase()))
+      if (matches.length > 0) {
+        out.push('[记住的事实]')
+        out.push(...matches.slice(0, 8))
+      }
     }
 
-    const content = readFileSync(factsPath, 'utf-8')
-    const query = (params.query as string).toLowerCase()
-    const lines = content.split('\n').filter(l => l.trim())
-    const matches = lines.filter(l => l.toLowerCase().includes(query))
-
-    if (matches.length === 0) {
-      return { success: true, output: `没找到关于"${params.query}"的记忆` }
+    // 第二路:对话和日记(episodes)。以前这个工具只搜事实文件,
+    // "之前聊过什么"她根本搜不到——回忆是半盲的
+    if (ctx.store) {
+      const rows = ctx.store.searchHybrid(query, 6)
+      if (rows.length > 0) {
+        out.push(out.length > 0 ? '\n[聊过的话和日记]' : '[聊过的话和日记]')
+        for (const r of rows) {
+          const date = r.timestamp.slice(0, 10)
+          const who = r.role === 'user' ? '哥哥' : r.role === 'assistant' ? '我' : ''
+          out.push(`[${date}]${who ? ` ${who}:` : ''} ${r.content.slice(0, 100).replace(/\n/g, ' ')}`)
+        }
+      }
     }
 
-    return { success: true, output: matches.slice(0, 10).join('\n') }
+    if (out.length === 0) {
+      return { success: true, output: `没找到关于"${query}"的记忆` }
+    }
+    return { success: true, output: out.join('\n') }
   },
 }
 

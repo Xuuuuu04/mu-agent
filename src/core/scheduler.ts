@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MuConfig, MoodState, WakeTrigger } from './types.js'
 import type { MemoryStore } from '../memory/store.js'
@@ -46,15 +46,57 @@ export class Scheduler {
 
     console.log(`[scheduler] 下次醒来: ${clamped}秒后 (${suggested.reason})`)
 
+    // 闹钟落盘:进程重启(部署/崩溃)时不丢她定好的"下次醒来"
+    this.saveWakeFile(suggested.reason, suggested.activity_type)
+
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = null
       this.scheduledWakeAt = null
+      this.clearWakeFile()
       this.onWake?.({
         type: 'self_scheduled',
         reason: suggested.reason,
         activity_type: suggested.activity_type,
       })
     }, clamped * 1000)
+  }
+
+  // 进程启动时恢复落盘的闹钟:还没到点就重新挂上;已经过点就马上叫醒她(补觉醒来)
+  restoreWake(): void {
+    const path = join(this.config.paths.data, 'memory', 'next-wake.json')
+    if (!existsSync(path)) return
+    try {
+      const saved = JSON.parse(readFileSync(path, 'utf-8')) as { at: string; reason: string; activity_type: string }
+      const remainMs = new Date(saved.at).getTime() - Date.now()
+      if (remainMs > 5000) {
+        this.scheduledWakeAt = new Date(saved.at)
+        this.lastWakeReason = saved.reason
+        console.log(`[scheduler] 恢复落盘闹钟: ${Math.round(remainMs / 1000)}秒后 (${saved.reason})`)
+        this.wakeTimer = setTimeout(() => {
+          this.wakeTimer = null
+          this.scheduledWakeAt = null
+          this.clearWakeFile()
+          this.onWake?.({ type: 'self_scheduled', reason: saved.reason, activity_type: saved.activity_type })
+        }, remainMs)
+      } else {
+        console.log(`[scheduler] 落盘闹钟已过点,立即唤醒 (${saved.reason})`)
+        this.clearWakeFile()
+        this.onWake?.({ type: 'self_scheduled', reason: `${saved.reason}(重启后补醒)`, activity_type: saved.activity_type })
+      }
+    } catch { this.clearWakeFile() }
+  }
+
+  private saveWakeFile(reason: string, activityType: string): void {
+    try {
+      writeFileSync(
+        join(this.config.paths.data, 'memory', 'next-wake.json'),
+        JSON.stringify({ at: this.scheduledWakeAt?.toISOString(), reason, activity_type: activityType }),
+      )
+    } catch { /* 落盘失败不影响内存闹钟 */ }
+  }
+
+  private clearWakeFile(): void {
+    try { unlinkSync(join(this.config.paths.data, 'memory', 'next-wake.json')) } catch { /* 不存在就算了 */ }
   }
 
   startCronFallback(): void {
@@ -107,6 +149,7 @@ export class Scheduler {
       clearTimeout(this.wakeTimer)
       this.wakeTimer = null
       this.scheduledWakeAt = null
+      this.clearWakeFile()
       console.log('[scheduler] 收到消息,打断 sleep')
     }
   }

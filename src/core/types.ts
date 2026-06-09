@@ -128,6 +128,8 @@ export interface ToolContext {
   config: MuConfig
   dataDir: string
   log: (msg: string) => void
+  // 记忆库句柄(memory_search 检索对话历史用)
+  store?: import('../memory/store.js').MemoryStore
   // 主动给用户发消息(message_send 用),路由到当前网关。imagePath 是本地图片,QQ 走富媒体
   sendMessage?: (text: string, imagePath?: string) => Promise<void>
   // 设置下次唤醒(schedule_wake 用)

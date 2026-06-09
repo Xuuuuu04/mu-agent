@@ -120,6 +120,12 @@ export class WebhookGateway implements GatewayAdapter {
     }
   }
 
+  // 同步等待还在不在:cycle 跑超 110s 后 resolver 已超时移除,
+  // 这时回复必须改走主动推送,否则就地蒸发(用户视角=已读不回)
+  hasPending(id: string): boolean {
+    return this.pendingResponses.has(id)
+  }
+
   private async handleRequest(req: HttpReq, res: ServerResponse): Promise<void> {
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')

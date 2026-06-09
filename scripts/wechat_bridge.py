@@ -180,12 +180,18 @@ async def _handle(msg):
         await _typing(sender, ctx or None, 0)  # 停"正在输入"
     if not reply:
         return
-    # 用这条 inbound 的 fresh token 回(关键:stale token 会被静默丢弃)
-    result = await _send_to(sender, reply, context_token=ctx or None)
-    ec = result.get("errcode", 0)
-    # 注:iLink sendmessage 成功常返回空(不带 context_token),这【不代表】未送达;
-    # 真正未投递看用户收没收到。errcode 非 0 才是真失败。
-    print(f"[wechat-bridge] 回复 {sender[:8]} errcode={ec}", flush=True)
+    # 按空行拆成几条发,像真人连发。微信反作弊敏感:最多 3 段、间隔 2.5s,超出合并
+    chunks = [c.strip() for c in reply.split("\n\n") if c.strip()]
+    if len(chunks) > 3:
+        chunks = chunks[:2] + ["\n\n".join(chunks[2:])]
+    for j, chunk in enumerate(chunks):
+        # 第一条用 inbound 的 fresh token(stale token 会被静默丢弃);
+        # 后续条传 None,_send_to 会从 store 取上一次发送返回的最新 token
+        result = await _send_to(sender, chunk, context_token=(ctx or None) if j == 0 else None)
+        ec = result.get("errcode", 0)
+        print(f"[wechat-bridge] 回复 {sender[:8]} 第{j + 1}/{len(chunks)}条 errcode={ec}", flush=True)
+        if j < len(chunks) - 1:
+            await asyncio.sleep(2.5)
 
 
 # 沐主动消息走这里:POST /send {text} → 发给最近对话的哥哥

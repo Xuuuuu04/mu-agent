@@ -181,6 +181,7 @@ export class AgentLoop {
             {
               config: this.config,
               dataDir: this.config.paths.data,
+              store: this.store ?? undefined,
               log: (msg: string) => console.log(`  [tool:${block.name}] ${msg}`),
               sendMessage: this.sendRouter
                 ? (text: string, imagePath?: string) => this.sendRouter!(replySource, text, imagePath)
