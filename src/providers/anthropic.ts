@@ -68,8 +68,9 @@ export function createAnthropicProvider(config: ProviderConfig): ModelProvider {
         // 其他 block(thinking/redacted_thinking 等)跳过，不塞空 text 污染回复
       }
       if (content.length === 0) {
+        // 同 openai.ts:截断且无内容时抛错走 fallback,静默空回复等于已读不回
         if (response.stop_reason === 'max_tokens') {
-          console.warn(`[${config.name}] 输出被 max_tokens 截断且无可用内容`)
+          throw new Error(`${config.name} 输出被 max_tokens 截断且无可用内容`)
         }
         content.push({ type: 'text', text: '' })
       }

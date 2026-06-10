@@ -46,10 +46,12 @@ export class MemoryConsolidation {
     }).join('\n')
 
     // 把已有记忆给模型对照,否则同一事实每次整合都重新提取一遍
-    // (清理前 user-facts 里"6/2 答辩"重复了 9 次,就是没对照的结果)
+    // (清理前 user-facts 里"6/2 答辩"重复了 9 次,就是没对照的结果)。
+    // 对照必须给全文:之前 slice(-3000) 只盖到尾部,88 行中文已超 3000 字符,
+    // 窗口外的旧事实照样重复提取(去重等于半失效)
     const factsPath = join(this.dataDir, 'memory', 'user-facts.md')
     const existingFacts = existsSync(factsPath)
-      ? readFileSync(factsPath, 'utf-8').slice(-3000)
+      ? readFileSync(factsPath, 'utf-8')
       : '(还没有任何记忆)'
 
     try {
@@ -57,9 +59,11 @@ export class MemoryConsolidation {
         system: CONSOLIDATION_PROMPT,
         messages: [{
           role: 'user',
-          content: `[已有记忆(最近部分)]\n${existingFacts}\n\n[最近的对话记录]\n${conversationText}\n\n请按格式提取——只要已有记忆里没有的新信息:`,
+          content: `[已有记忆]\n${existingFacts}\n\n[最近的对话记录]\n${conversationText}\n\n请按格式提取——只要已有记忆里没有的新信息:`,
         }],
         max_tokens: 2000,
+        // 提取是格式化任务,不值得 GLM 的 30-120s 推理;且 2000 max_tokens 会被 reasoning 吃光
+        thinking: 'disabled',
       })
 
       const text = response.content
@@ -122,6 +126,8 @@ export class MemoryConsolidation {
         system: '把这段对话压成简短的"前情提要"。保留:聊了什么关键的事、做过的决定、还没做完的事、当时的情绪氛围。用沐的第一人称视角,称对方"哥哥",口语化,300字以内,只输出提要本身。',
         messages: [{ role: 'user', content: text.slice(0, 8000) }],
         max_tokens: 800,
+        // 800 tokens 的预算禁不起 reasoning 吃,吃光=压缩失败=只剩硬裁剪兜底
+        thinking: 'disabled',
       })
       const summary = response.content.filter(b => b.type === 'text').map(b => b.text).join('').trim()
       return summary || null
@@ -150,7 +156,9 @@ export class MemoryConsolidation {
       const response = await this.router.chat({
         system: '用一两句话概括这段对话聊了什么,口语化,不超过50字。只输出摘要本身。',
         messages: [{ role: 'user', content: text.slice(0, 4000) }],
+        // 200 tokens 给推理模型必被 reasoning 吃光(归档摘要从来没成功过的根因)
         max_tokens: 200,
+        thinking: 'disabled',
       })
       const summary = response.content.filter(b => b.type === 'text').map(b => b.text).join('').trim()
       if (!summary) return

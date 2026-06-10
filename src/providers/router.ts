@@ -2,6 +2,7 @@ import type { MuConfig, ProviderConfig } from '../core/types.js'
 import type { ModelProvider, ChatParams, ChatResponse } from './base.js'
 import { createAnthropicProvider } from './anthropic.js'
 import { createOpenAIProvider } from './openai.js'
+import { sanitizeMessages } from './sanitize-messages.js'
 
 export function createProvider(config: ProviderConfig): ModelProvider {
   if (config.format === 'anthropic') return createAnthropicProvider(config)
@@ -27,6 +28,14 @@ export class ModelRouter {
   }
 
   async chat(params: ChatParams): Promise<ChatResponse> {
+    // 最后防线:孤儿 tool_result/无应答 tool_use 在这里剔掉。
+    // 上游切点逻辑全对时这是零开销空转;一旦哪天又坏,坏的是几个 block 而不是接下来每一次请求
+    const { messages, dropped } = sanitizeMessages(params.messages)
+    if (dropped.length > 0) {
+      console.warn(`[router] 发送前剔除非法消息块: ${dropped.join('; ')}`)
+      params = { ...params, messages }
+    }
+
     const providers = [this.primary, ...this.fallbacks]
 
     for (let i = 0; i < providers.length; i++) {

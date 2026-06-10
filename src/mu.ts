@@ -28,6 +28,7 @@ import { toolCreateTool } from './tools/builtin/tool-create.js'
 import { HotReloader } from './tools/hot-reload.js'
 import { McpManager } from './tools/mcp/manager.js'
 import { guardStyle } from './soul/style-guard.js'
+import { isCommandText } from './core/commands.js'
 import type { WakeTrigger } from './core/types.js'
 
 const PROJECT_ROOT = resolve(import.meta.dirname, '..')
@@ -130,8 +131,13 @@ async function main() {
   })
   await webhook.connect()
   webhook.onMessage((msg) => {
-    proactive.onUserMessage()
-    scheduler.interruptForMessage()
+    // 命令消息(/status 这类)是发给系统的查询,不是哥哥来说话:
+    // 不打断她的闹钟(打断后命令路径不会重设,唤醒链会断),也不算一次互动
+    const isCmd = msg.content.type === 'text' && isCommandText(msg.content.text)
+    if (!isCmd) {
+      proactive.onUserMessage()
+      scheduler.interruptForMessage()
+    }
     queue.push({ type: 'message', message: msg })
     processQueue()
   })
@@ -195,6 +201,10 @@ async function main() {
       }
     }
   }
+
+  // 运维告警:agent-loop 连续失败自愈时直接 POST QQ bridge 通知哥哥。
+  // 不走 LLM(模型全挂时才需要它)、不走 deliverToUser(那条路失败会塞 outbox 当成她的话)
+  loop.setOpsAlert(text => postToQQ(text))
 
   // message_send / 主动消息的发送路由
   loop.setSendRouter(async (source, text, imagePath) => {
@@ -297,8 +307,10 @@ async function main() {
 
       const tok = result.tokens_used
       const cache = tok.cache_read ? ` cache:${tok.cache_read}` : ''
-      log.info('cycle', `${tok.input}+${tok.output}tok${cache} ${result.tool_calls_made}tools ${result.duration_ms}ms`, {
-        trigger: trigger.type, input: tok.input, output: tok.output, cache_read: tok.cache_read ?? 0,
+      // 来源摘要必须进日志:06-10 上午 12 条匿名空 cycle 查了半天才定位到是谁发的
+      const who = describeTrigger(trigger)
+      log.info('cycle', `${tok.input}+${tok.output}tok${cache} ${result.tool_calls_made}tools ${result.duration_ms}ms | ${who}`, {
+        trigger: trigger.type, who, input: tok.input, output: tok.output, cache_read: tok.cache_read ?? 0,
         tools: result.tool_calls_made, ms: result.duration_ms,
       })
 
@@ -321,8 +333,11 @@ async function main() {
   })
 
   cli.onMessage((msg) => {
-    proactive.onUserMessage()
-    scheduler.interruptForMessage()
+    const isCmd = msg.content.type === 'text' && isCommandText(msg.content.text)
+    if (!isCmd) {
+      proactive.onUserMessage()
+      scheduler.interruptForMessage()
+    }
     queue.push({ type: 'message', message: msg })
     processQueue()
   })
@@ -334,6 +349,7 @@ async function main() {
   })
   proactive.start()
 
+  loop.restoreSession()     // 重启前落盘的会话接回来,部署不再丢她的短期记忆
   scheduler.startCronFallback()
   scheduler.restoreWake()   // 重启前落盘的闹钟接回来,部署不再偷走她的睡醒
   cli.startInteractive()
@@ -349,6 +365,22 @@ async function main() {
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
+}
+
+// cycle 日志里的一句话来源:谁(渠道:发送者)说了什么 / 因为什么醒
+function describeTrigger(trigger: WakeTrigger): string {
+  switch (trigger.type) {
+    case 'message': {
+      const m = trigger.message
+      const text = m.content.type === 'text' ? m.content.text : `[${m.content.type}]`
+      return `${m.source}:${m.sender.id.slice(0, 8)} "${text.slice(0, 20)}"`
+    }
+    case 'self_scheduled': return `自醒:${trigger.reason.slice(0, 24)}`
+    case 'cron_fallback': return `cron兜底:${trigger.reason.slice(0, 24)}`
+    case 'system_event': return `事件:${trigger.event.slice(0, 24)}`
+    case 'webhook': return `webhook:${trigger.source}`
+    case 'manual': return `手动:${trigger.reason.slice(0, 24)}`
+  }
 }
 
 main().catch((err) => {

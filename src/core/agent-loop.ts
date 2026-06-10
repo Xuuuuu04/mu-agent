@@ -1,6 +1,9 @@
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
+import { join } from 'node:path'
 import type { MuConfig, WakeTrigger, ChatMessage, ContentBlock, CycleResult } from './types.js'
 import { ContextAssembler } from './context-assembler.js'
 import { ModelRouter } from '../providers/router.js'
+import { sanitizeMessages } from '../providers/sanitize-messages.js'
 import { ToolRegistry } from '../tools/registry.js'
 import type { MemoryStore } from '../memory/store.js'
 import type { Scheduler } from './scheduler.js'
@@ -29,6 +32,9 @@ export class AgentLoop {
   private consecutiveFailures = 0
   private compacting = false
   private sendRouter: ((source: string, text: string, imagePath?: string) => Promise<void>) | null = null
+  private opsAlert: ((text: string) => Promise<void>) | null = null
+  private lastOpsAlertAt = 0
+  private sessionFile: string
 
   constructor(opts: {
     config: MuConfig
@@ -49,6 +55,7 @@ export class AgentLoop {
     this.consolidation = opts.consolidation ?? null
     this.embedding = opts.embedding ?? null
     this.sessionId = `s_${Date.now().toString(36)}`
+    this.sessionFile = join(this.config.paths.data, 'memory', 'session.json')
   }
 
   async runCycle(trigger: WakeTrigger): Promise<CycleResult> {
@@ -241,6 +248,7 @@ export class AgentLoop {
       this.lastActivity = Date.now()
       this.lastSuccessAt = new Date()
       this.consecutiveFailures = 0
+      this.persistSession()
 
       return {
         response: this.cleanResponse(finalText),
@@ -257,6 +265,8 @@ export class AgentLoop {
         this.assembler.streamLayer.append('刚才有段对话出了问题,连着几次说不出话,把那段聊天清掉重新开始了', 'system')
         this.clearSession()
         this.consecutiveFailures = 0
+        // 06-09 晚的死亡螺旋跑了 70 多分钟没人知道——出这种事必须有人收到信
+        this.sendOpsAlert(`[沐的系统] 连续 3 次没跑通,已自动清空会话自愈。最后的错: ${(err as Error).message.slice(0, 150)}`)
       }
       throw err
     } finally {
@@ -306,6 +316,11 @@ export class AgentLoop {
     if (wakeDirective && this.scheduler) {
       this.scheduler.scheduleNext(wakeDirective)
       this.assembler.setLastWake(new Date(), wakeDirective.activity_type)
+    } else if (this.scheduler && !this.scheduler.getStatus().sleeping) {
+      // BEHAVIOR_RULES 一直宣称"不写 [WAKE] 则使用默认间隔",但这个分支此前不存在:
+      // 消息打断闹钟后她忘写 [WAKE],就没有任何 pending wake,唤醒链全靠 cron 数小时后兜底。
+      // 默认 30 分钟,clamp 会按夜间/困倦自动抬高
+      this.scheduler.scheduleNext({ seconds: 1800, reason: '没定下次醒来,先按默认歇一会', activity_type: 'rest' })
     }
 
     // 给还没算 embedding 的记忆补算(有 embedding 服务才做)
@@ -347,6 +362,7 @@ export class AgentLoop {
         content: `[前情提要,你们之前聊的浓缩] ${summary}`,
       })
       console.log(`[agent-loop] 会话压缩: ${headEnd} 条 → 1 条前情提要`)
+      this.persistSession()
     } finally {
       this.compacting = false
     }
@@ -377,11 +393,60 @@ export class AgentLoop {
     const history = this.sessionHistory
     this.sessionHistory = []
     this.sessionId = `s_${Date.now().toString(36)}`
+    this.removeSessionFile()
 
     // 会话摘要交给整合机制,这里只记一条归档标记
     if (this.consolidation) {
       this.consolidation.summarizeSession(oldSession, history).catch(() => { /* 摘要失败不阻塞 */ })
     }
+  }
+
+  // 会话落盘:重启(部署/崩溃)不再丢短期对话记忆。autocompact 把规模压在 ~40 条内,写整个文件没负担
+  private persistSession(): void {
+    try {
+      writeFileSync(this.sessionFile, JSON.stringify({
+        sessionId: this.sessionId,
+        lastActivity: this.lastActivity,
+        history: this.sessionHistory,
+      }))
+    } catch { /* 落盘失败不影响对话 */ }
+  }
+
+  private removeSessionFile(): void {
+    try { unlinkSync(this.sessionFile) } catch { /* 不存在就算了 */ }
+  }
+
+  // 启动时恢复落盘会话(mu.ts 调,在第一个 cycle 之前)。
+  // 恢复要过两道闸:sanitize 防孤儿工具块、trimHistory 保证切点;
+  // lastActivity 一并恢复——超时的旧会话会被下个 cycle 的 maybeRotateSession 正常归档(摘要不丢)
+  restoreSession(): void {
+    if (!existsSync(this.sessionFile)) return
+    try {
+      const saved = JSON.parse(readFileSync(this.sessionFile, 'utf-8')) as {
+        sessionId?: string; lastActivity?: number; history?: ChatMessage[]
+      }
+      if (!Array.isArray(saved.history) || saved.history.length === 0) return
+      const { messages, dropped } = sanitizeMessages(saved.history)
+      if (dropped.length > 0) console.warn(`[agent-loop] 恢复会话时剔除非法块: ${dropped.join('; ')}`)
+      this.sessionHistory = trimHistory(messages, 40)
+      if (typeof saved.sessionId === 'string' && saved.sessionId) this.sessionId = saved.sessionId
+      if (typeof saved.lastActivity === 'number') this.lastActivity = saved.lastActivity
+      console.log(`[agent-loop] 恢复落盘会话: ${this.sessionHistory.length} 条 (${this.sessionId})`)
+    } catch { /* 文件坏了当全新会话 */ }
+  }
+
+  // 运维告警(mu.ts 注入,直接 POST QQ bridge,不过 LLM、不占 proactive 配额)。
+  // 1 小时节流:死亡螺旋下每 30 分钟自愈一次,告警别跟着刷屏
+  private sendOpsAlert(text: string): void {
+    if (!this.opsAlert) return
+    if (Date.now() - this.lastOpsAlertAt < 3600_000) return
+    this.lastOpsAlertAt = Date.now()
+    this.opsAlert(text).catch(err =>
+      console.error(`[ops-alert] 告警也没发出去: ${(err as Error).message}`))
+  }
+
+  setOpsAlert(fn: (text: string) => Promise<void>): void {
+    this.opsAlert = fn
   }
 
   private extractStreamEntry(text: string): { content: string; activity?: string } | null {
@@ -418,6 +483,7 @@ export class AgentLoop {
   clearSession(): void {
     this.sessionHistory = []
     this.sessionId = `s_${Date.now().toString(36)}`
+    this.removeSessionFile()
   }
 
   // mu.ts 注入:把 message_send 的文本(可带图片)路由到对应网关

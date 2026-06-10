@@ -1,7 +1,8 @@
 import type { ToolDef } from '../../core/types.js'
 
-// web_search:优先用智谱(config.tools.web_search 配了 zhipu key),否则降级 DuckDuckGo。
-// 智谱搜索对中文、实时信息强很多;DuckDuckGo 是无 key 兜底。
+// web_search 三级降级:智谱(配了 key 且有余额)→ 必应中国结果页直爬 → DuckDuckGo。
+// 必应是主力兜底:xpark 在国内,DDG 实测连不上(06-10),智谱按量计费没充值,
+// cn.bing.com 无 key 可达且稳定返回 10 条。页面结构变了 bingSearch 返回 null 自动落到 DDG。
 export const webSearchTool: ToolDef = {
   name: 'web_search',
   description: '搜索引擎查询。想知道实时信息、查个东西时用',
@@ -16,10 +17,48 @@ export const webSearchTool: ToolDef = {
     if (cfg?.provider === 'zhipu' && cfg.api_key) {
       const r = await zhipuSearch(q, cfg.api_key, cfg.base_url)
       if (r) { ctx.log(`智谱搜了: ${q}`); return { success: true, output: r } }
-      // 智谱挂了降级 DuckDuckGo
     }
+    const b = await bingSearch(q)
+    if (b) { ctx.log(`搜了: ${q}`); return { success: true, output: b } }
     return duckduckgo(q, ctx.log)
   },
+}
+
+// 必应中国 SERP 是单行 HTML,结果块是 <li class="b_algo">…</li>,标题/摘要里混着
+// <strong> 等标签,抽出来要剥干净。href 偶尔是 bing 跳转链,不解,标题摘要才是主要价值。
+// export 仅供 test-search.ts 对照验证
+export async function bingSearch(query: string): Promise<string | null> {
+  try {
+    const resp = await fetch(`https://cn.bing.com/search?q=${encodeURIComponent(query)}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!resp.ok) { console.error(`[web_search] 必应 HTTP ${resp.status}`); return null }
+    const html = await resp.text()
+    const items = html.match(/<li class="b_algo"[\s\S]*?<\/li>/g)?.slice(0, 5) ?? []
+    const lines: string[] = []
+    for (const item of items) {
+      const title = stripHtml(item.match(/<h2[^>]*>([\s\S]*?)<\/h2>/)?.[1] ?? '')
+      const link = item.match(/<h2[^>]*><a[^>]*href="([^"]+)"/)?.[1] ?? ''
+      const snippet = stripHtml(item.match(/<p[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? '')
+      if (title) lines.push(`${lines.length + 1}. ${title}\n${snippet.slice(0, 200)}\n${link}`)
+    }
+    if (lines.length === 0) return null
+    return lines.join('\n\n').slice(0, 4000)
+  } catch (err) {
+    console.error(`[web_search] 必应 ${(err as Error).message}`)
+    return null
+  }
+}
+
+function stripHtml(s: string): string {
+  return s
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n: string) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&nbsp;|&ensp;|&emsp;/g, ' ')
+    .trim()
 }
 
 async function zhipuSearch(query: string, apiKey: string, baseUrl?: string): Promise<string | null> {

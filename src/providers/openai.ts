@@ -64,9 +64,11 @@ export function createOpenAIProvider(config: ProviderConfig): ModelProvider {
         content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input: parseToolArgs(tc.function.arguments) })
       }
       if (content.length === 0) {
-        // GLM 等推理模型把 max_tokens 全用在 reasoning 上时，content 空且无 tool_calls
+        // GLM 等推理模型把 max_tokens 全用在 reasoning 上时，content 空且无 tool_calls。
+        // 必须抛错而不是静默返回空串:静默空会被当成功——router 不 fallback、
+        // 用户视角"已读不回"、consolidation/compact 白跑(06-10 上午 5 次)
         if (choice?.finish_reason === 'length') {
-          console.warn(`[${config.name}] 输出被 max_tokens 截断且无内容(reasoning 吃光？把 max_tokens 调大)`)
+          throw new Error(`${config.name} 输出被 max_tokens 截断且无内容(reasoning 吃光)`)
         }
         content.push({ type: 'text', text: '' })
       }
