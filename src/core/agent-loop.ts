@@ -487,12 +487,15 @@ export class AgentLoop {
   }
 
   private extractWakeDirective(text: string): { seconds: number; reason: string; activity_type: string } | null {
-    const match = text.match(/\[WAKE:(\d+):([^:]*):([^\]\n]*)\]?/)
+    // reason 段必须挡住 ]:她写 [WAKE:300:催饭/active](用/合并漏了一段)时,
+    // 旧正则 [^:]* 会贪婪吞过 ] 一路吃到下一个 [MOOD 的冒号,reason 变成"催饭/active] [MOOD"。
+    // activity 段改可选——缺了按 rest 算,别让整条指令作废
+    const match = text.match(/\[WAKE:(\d+):([^:\]\n]*)(?::([^\]\n]*))?\]?/)
     if (!match) return null
     return {
       seconds: parseInt(match[1]!),
       reason: match[2]!.trim(),
-      activity_type: match[3]!.trim(),
+      activity_type: (match[3] ?? '').trim() || 'rest',
     }
   }
 

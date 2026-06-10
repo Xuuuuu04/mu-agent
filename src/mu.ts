@@ -1,3 +1,4 @@
+import { VERSION } from './version.js'
 import { resolve } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
 import { loadConfig } from './config.js'
@@ -35,7 +36,7 @@ import type { WakeTrigger } from './core/types.js'
 const PROJECT_ROOT = resolve(import.meta.dirname, '..')
 
 async function main() {
-  console.log('沐 (Mu) v0.2.0 启动中...\n')
+  console.log(`沐 (Mu) v${VERSION} 启动中...\n`)
 
   const config = loadConfig(PROJECT_ROOT)
 

@@ -1,3 +1,4 @@
+import { VERSION } from '../../version.js'
 import { spawn, type ChildProcess } from 'node:child_process'
 import type { ToolDef, ToolResult, McpServerConfig } from '../../core/types.js'
 
@@ -42,7 +43,7 @@ export class McpClient {
     await this.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'mu', version: '0.2.0' },
+      clientInfo: { name: 'mu', version: VERSION },
     })
     this.notify('notifications/initialized', {})
 

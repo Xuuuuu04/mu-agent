@@ -1,3 +1,4 @@
+import { VERSION } from '../version.js'
 import { createInterface } from 'node:readline'
 import type { IncomingMessage, GatewayAdapter, OutgoingMessage } from '../core/types.js'
 
@@ -53,7 +54,7 @@ export class CLIGateway implements GatewayAdapter {
   startInteractive(onResponse?: () => void): void {
     if (!this.rl || !this.handler) return
 
-    console.log('沐 v0.1.0 — CLI 模式')
+    console.log(`沐 v${VERSION} — CLI 模式`)
     console.log('输入消息开始对话。/quit 退出,/clear 清空会话')
     console.log('---')
 

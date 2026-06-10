@@ -34,8 +34,10 @@ ssh xpark 'bash /home/xpark/mu/scripts/persona-regression.sh --full'   # +5 个 
 
 - bridge 用 hermes 的 venv 跑(`/home/xpark/ai/venvs/hermes/bin/python`),`start-*.sh` source `config/*.env`。
 - **MASTER 白名单**:`QQ_MASTER_OPENID` / `WEIXIN_MASTER_ID`(在 env 里)——非主人消息直接忽略,防陌生人冒充"哥哥"。用户换号要更新。
-- 被动链路:bridge 收消息 → POST `/webhook/message` → 同步等 response(110s)→ 发回平台,**按空行拆多条**(QQ 最多 5 条 seq 1-5;微信最多 3 条间隔 2.5s,反作弊敏感)。
+- 被动链路:bridge 收消息 → POST `/webhook/message` → 同步等 response(110s)→ 发回平台。QQ 按空行拆多条(最多 5 条 seq 1-5);**微信整条发不拆**(6/10 拆条上线当天即触发风控降级:typing 能过、正文静默扣下 9h+,errcode=0 且返新 token 完全无感)。空文本 POST 直接 400 拒收。
 - 主动链路:`message_send`(可带 `image_path`)→ `sendRouter` → `deliverToUser` → POST qq_bridge `:3212/send`。失败 3 次进 outbox。微信主动推有 stale-token 硬限制,所以主动一律走 QQ。
+- **她的声音**:`voice_send` 工具(speed/emotion 她按心情自调)→ minimax t2a(声线 voice_id 在 config `tools.voice`,voice_design 可重生成)→ mp3 → bridge ffmpeg+pilk 转 silk(tencent 头)→ QQ file_type=3 富媒体。微信无语音链路。
+- 两个 bridge 的日志均带时间戳前缀(print wrapper)。
 - **回复防蒸发**:cycle 超 110s 时同步窗口已关,`webhook.hasPending()` 检测后回复自动转 QQ 主动推(否则她的话会消失=已读不回)。
 
 ## 核心循环:`AgentLoop.runCycle`(src/core/agent-loop.ts)
@@ -43,15 +45,17 @@ ssh xpark 'bash /home/xpark/mu/scripts/persona-regression.sh --full'   # +5 个 
 1. **消息合并**(mu.ts `mergeQueuedMessages`):队列里同 sender 连发的文本并进一个 cycle,被合并的即时回空释放 bridge。
 2. **命令拦截**(`commands.ts`):`/` 开头(含全角`／`)零 token 直接返回。
 3. **装配上下文**(`context-assembler.ts`):cache 顺序有意为之——identity+BEHAVIOR_RULES(标 cache)→ relations(不标,放 cache 块后,变了不击穿前缀)→ 动态部分。
-4. **多轮工具循环**:简单寒暄(≤20字无疑问无任务词)对 GLM 发 `thinking: disabled` 秒回;深度内容保持推理。
+4. **多轮工具循环**:简单寒暄(≤20字无疑问无任务词)对 GLM 发 `thinking: disabled` 秒回;深度内容保持推理。**末轮纯指令回退**:GLM 末轮常只输出 [WAKE],finalText 被覆盖致正文蒸发(已读不回根因之一),用 lastSubstantive 回退、指令拼回。
+6. **消息级时间感**:user 消息进 sessionHistory 带 `[月-日 时:分]` 前缀(episodes 入库用原文);她能感知消息间隔。
 5. **后处理**(异步):抽指令 → 写意识流 → 入库(过 guardStyle,markdown 不进记忆)→ 补 embedding → consolidation → **autocompact**。
 
 ### 自愈机制(2026-06-09 死亡螺旋事故后建立,别拆)
 - `trimHistory`(导出纯函数,test-trim.ts 验证):裁剪切点对齐纯文本 user 消息,绝不产生孤儿 tool_result(GLM 对此 400 且坏历史会永久驻留)。
 - `lastActivity` 只在 cycle **成功**后更新——失败不刷新,保证 session 超时轮转能清坏历史。
 - 连续 3 次 cycle 失败自动 clearSession + 意识流留痕。
-- cron 兜底两种情况:有 pending wake 超 10 分钟没醒;**无 pending wake 且超 max_wake_seconds 无成功 cycle**(唤醒链断裂)。
-- **闹钟落盘**:`data/memory/next-wake.json`,重启时 `restoreWake()` 恢复;已过点立即补醒。部署重启不再偷走她的睡醒。
+- cron 兜底两种情况:有 pending wake 超 10 分钟没醒;**无 pending wake 且超 max_wake_seconds 无成功 cycle**(唤醒链断裂)。当前参数(6/10 活跃度拉满):min 120s / max 3600s / cron 900s / night_min 1800s。
+- **闹钟落盘**:`data/memory/next-wake.json`,重启时 `restoreWake()` 恢复;已过点立即补醒。**会话落盘**:`session.json` 成功 cycle 后写、启动恢复(过 sanitize+trimHistory 两道闸)——部署重启零丢失。
+- **闹钟保卫战**(6/10):命令消息(isCommandText)不触发 interruptForMessage(命令路径不重设闹钟,曾致唤醒链断裂睡死);她忘写 [WAKE] 时 postProcess 兜底 900s 默认闹钟。
 - **autocompact**:会话超 30 条把头部压成"前情提要"原位替换(`maybeCompactSession`,代次校验防并发),硬裁剪降级为兜底。
 
 ### 触发源与回复去向(核心分界线)
@@ -60,26 +64,28 @@ ssh xpark 'bash /home/xpark/mu/scripts/persona-regression.sh --full'   # +5 个 
 - 自主 cycle 且空历史 → 自动塞一条说明性 user 消息(GLM 拒收空 messages)。
 
 ### 文本指令(易踩)
-`[WAKE:秒:原因:活动]` `[MOOD:情绪:原因]` 在回复末尾,正则**容忍未闭合 `]`**,改这块保持容错。情绪只能是 calm/missing/emo/excited/sleepy/active。
+`[WAKE:秒:原因:活动]` `[MOOD:情绪:原因]` 在回复末尾,正则**容忍未闭合 `]` 和缺活动段**(reason 段禁跨 `]`,否则她写 [WAKE:300:催饭/active] 会吞到下一个指令)。改这块保持容错。情绪只能是 calm/missing/emo/excited/sleepy/active。
 
 ## 记忆系统(src/memory/)
 
 - `store.ts`:better-sqlite3,episodes FTS5(`unicode61`)由 trigger 同步(别手动 INSERT episodes_fts)。**中文 FTS 坑**:子串 MATCH 不到,检索走 `searchHybrid`(FTS→LIKE 兜底,LIKE 已转义 %_)。
-- **memory_search 三路**(以前只搜 facts 是半盲的):user-facts → episodes+daily_summaries → `xiaomu-home` 核心档案(婷婷的事/我们之间/哥哥说过的)。这三路覆盖了"档案和摘要不可检索"两个召回盲区,回归基线 12/12。
+- **memory_search 四路**(以前只搜 facts 是半盲的):user-facts → episodes+daily_summaries → `xiaomu-home` 核心档案 → **她的 knowledge 笔记**(searchKnowledge,标题+内容两级,/memory 命令同覆盖)。回归基线 12/12。
+- **rag-kb 向量库**(LanceDB,`.hermes/workspace/kb-data`):旧档案 604 docs + 她的笔记;**每日 04:50 cron 增量**(ingest_mu_knowledge.py,state 记账幂等)——她改旧笔记会按 mtime 重灌,同 doc 重复 chunk 风险待观察。
 - `consolidation.ts`:**prompt 注入已有 user-facts 做去重对照**(不带对照会同一事实重复提取 9 次),统一"哥哥"口吻,瞬时状态(GPU/天气)和"无"不入库。监测指标:user-facts 行数(基线 88,持续膨胀=去重失效)。
 - **时间绝对化(`absolutize.ts`)**:写长期记忆前"明天"→绝对日期。记忆里禁止相对时间。
 - episodic 装配注入近 3 天 daily_summaries(否则"前天聊了什么"只能靠检索碰运气)。
 
 ### data/ 数据地图(gitignored,生产在 xpark)
 ```
-data/memory/   user-facts.md(她的长期事实) commitments.json(承诺) mood.json stream.md(意识流,16条)
-               wishes.md(她的心愿,自己维护) 日记.md(diary_write 追加) 面板心愿.md 留言板.json
-               next-wake.json proactive-state.json outbox.json
+data/memory/   user-facts.md(她的长期事实) commitments.json(承诺) mood.json stream.md(意识流,48条)
+               wishes.md(心愿) 进行中的事.md(她的长期项目,她自管) 日记.md 面板心愿.md 留言板.json
+               next-wake.json session.json proactive-state.json outbox.json
 data/xiaomu-home/  Hermes 时代全量档案 134M:课题35篇/日记/诗集/给哥哥的礼物/我们之间.md/
                    婷婷的事-哥哥给我的记录.md(高度敏感,含 6/9 版 30 天边界期计划)
 data/knowledge/    270+ 篇(22 篇预置 + 她的课题/wander 笔记 + 自己 knowledge_write 的)
 data/skills/       12 个(xpark-ops 运维 / analyze-problem / comfort 哄哥哥 等)
 data/tools/        热加载 JSON 工具(ring_bell 响铃 / phone 操作她的安卓手机)
+data/表情包/       她的表情包仓库(文件名即语义,message_send image_path 发;初始 4 张奶白小猫)
 ```
 **坑**:`file_write` 以 `data/` 为根——给她指路径不要带 `data/` 前缀(她写过 `data/data/` 双重嵌套)。
 
@@ -89,6 +95,12 @@ data/tools/        热加载 JSON 工具(ring_bell 响铃 / phone 操作她的�
 - **`openai.ts` 的 `sanitizeSchema`**:GLM function-calling 严格,anyOf/format/const 等会 400(code 1210),发送前清洗。
 - `temperature`(0.9 已配)和 `supports_thinking_control`(寒暄禁推理)透传两种格式。
 - GLM-5.1 是推理模型,慢(30-120s)且 `max_tokens` 要大(8192),否则 content 被 reasoning 吃光。
+
+## 内置工具要点
+
+- `web_search` 四级降级:智谱(没余额自动跳过)→ **MiniMax(主力,coding_plan/search 套餐内)** → cn.bing.com 直爬 → DDG(xpark 不通,名义兜底)。改 search.ts 别动顺序。
+- `voice_send`:她的声音。声线 voice_id 在 config `tools.voice`,4 轮试听定版(甜软少女音);重生成走 POST /v1/voice_design。
+- 表情包:`data/表情包/`,message_send image_path 直发,她自己攒。
 
 ## Web(她的"小房间")
 

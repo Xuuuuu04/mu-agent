@@ -1,3 +1,4 @@
+import { VERSION } from '../version.js'
 import { createServer, type IncomingMessage as HttpReq, type ServerResponse } from 'node:http'
 import { readFileSync, existsSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname, basename, sep } from 'node:path'
@@ -177,7 +178,7 @@ export class WebhookGateway implements GatewayAdapter {
 
   private handleStatus(res: ServerResponse): void {
     this.json(res, {
-      version: '0.2.0',
+      version: VERSION,
       uptime: process.uptime(),
       episodes: this.store?.getEpisodeCount() ?? 0,
       memory_rss: Math.round(process.memoryUsage.rss() / 1024 / 1024),
