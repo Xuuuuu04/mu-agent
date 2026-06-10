@@ -262,6 +262,9 @@ async function main() {
     const trigger = queue.shift()!
     try {
       await mergeQueuedMessages(trigger)
+      // 开始就打一行:GLM cycle 动辄几分钟,没有这行的话,跑着的 cycle 在日志里是隐形的
+      // (06-10 上午她醒来跑了 10+ 分钟,外面只能靠猜)
+      console.log(`[cycle] 开始 (${trigger.type}) ${describeTrigger(trigger)}`)
       const result = await loop.runCycle(trigger)
 
       // 只有"消息触发"的 cycle 才把回复发给用户(这是在回他的话)。

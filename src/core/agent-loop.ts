@@ -148,7 +148,15 @@ export class AgentLoop {
       let turns = 0
       let finalText = ''
 
+      // cycle 时间预算:20 轮 × GLM 慢推理能跑半小时,期间哥哥的消息全在排队(失联感)。
+      // 哥哥在等的 cycle 5 分钟收尾;自主活动没人等,给 15 分钟做深度的事
+      const budgetMs = (trigger.type === 'message' ? 300 : 900) * 1000
+
       while (turns < this.config.agent.max_turns_per_cycle) {
+        if (turns > 0 && Date.now() - start > budgetMs) {
+          console.warn(`[agent-loop] cycle 超时间预算(${Math.round((Date.now() - start) / 1000)}s),带现有结果收尾`)
+          break
+        }
         turns++
 
         const response = await this.router.chat({
