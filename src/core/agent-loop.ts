@@ -114,7 +114,10 @@ export class AgentLoop {
           ? `${trigger.message.context}\n[有人@你] ${baseText}`
           : baseText
 
-        this.sessionHistory.push({ role: 'user', content: text })
+        // 会话历史里的 user 消息带时刻前缀:没有它,10 分钟前和 2 小时前的消息
+        // 在 history 里长得一样,她对"间隔"是盲的(哥哥要求时间意识高度清晰)。
+        // episodes 入库用原文——时间戳列里有,别让格式渗进长期记忆
+        this.sessionHistory.push({ role: 'user', content: `[${stamp()}] ${text}` })
         this.assembler.setLastUserContact(new Date())
 
         this.store?.insertEpisode({
@@ -133,7 +136,7 @@ export class AgentLoop {
         // 自主醒来且没有任何对话历史:空 messages 数组会被 GLM/Claude 拒收(2013 messages must not be empty)
         this.sessionHistory.push({
           role: 'user',
-          content: '(你自己醒了,这会儿没有新消息。唤醒原因看上面,想做什么自己决定)',
+          content: `[${stamp()}] (你自己醒了,这会儿没有新消息。唤醒原因看上面,想做什么自己决定)`,
         })
       }
 
@@ -556,4 +559,10 @@ function truncateAtBoundary(text: string, max: number): string {
 
 function jsonOrNull(arr: string[]): string | null {
   return arr.length > 0 ? JSON.stringify(arr) : null
+}
+
+// 会话内消息的时刻前缀,如 "6-10 13:02"。给她消息级的时间分辨率(间隔感)
+function stamp(): string {
+  const d = new Date()
+  return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
