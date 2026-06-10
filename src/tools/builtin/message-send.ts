@@ -1,4 +1,5 @@
 import type { ToolDef } from '../../core/types.js'
+import { extractEntities } from '../../memory/entities.js'
 
 // 同一内容 60 秒去重,防止 glitch 刷屏
 const recentSends = new Map<string, number>()
@@ -31,6 +32,23 @@ export const messageSendTool: ToolDef = {
       recentSends.set(dedupeKey, now)
       // 清理老记录
       for (const [k, t] of recentSends) if (now - t > 120000) recentSends.delete(k)
+      // 主动说出去的话也要进记忆:之前只在会话历史的 tool_use 里,轮转后就没了——
+      // 早报/提醒这些她自己发的消息,事后她检索不到("我早上跟你说了啥"答不上)
+      if (text) {
+        const entities = extractEntities(text)
+        ctx.store?.insertEpisode({
+          id: `ep_${now.toString(36)}_send`,
+          timestamp: new Date(now).toISOString(),
+          source: 'chat',
+          role: 'assistant',
+          content: `(主动发给哥哥) ${text}`.slice(0, 500),
+          summary: null,
+          embedding: null,
+          session_id: null,
+          topic_tags: null,
+          entities: entities.length > 0 ? JSON.stringify(entities) : null,
+        })
+      }
       ctx.log(`发了: ${text.slice(0, 40)}`)
       return { success: true, output: '发出去了' }
     } catch (err) {

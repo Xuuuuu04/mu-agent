@@ -16,13 +16,25 @@ ask() {
 }
 
 echo "===== 召回测试(零成本) ====="
+# 前 12 个测旧记忆(facts/episodes/档案),后 5 个测 L6 知识层(她自己写的笔记,06-10 并入)
 PASS=0; TOTAL=0
-for q in 婷婷 生日 CZ6315 答辩 礼物 守夜 贫血 北京实习 诗集 香港 加缪 课题; do
+for q in 婷婷 生日 CZ6315 答辩 礼物 守夜 贫血 北京实习 诗集 香港 加缪 课题 \
+         白银 汪曾祺 受戒 哥德尔 毕飞宇; do
   TOTAL=$((TOTAL+1))
   r=$(ask "/memory $q")
   if echo "$r" | grep -q "没找到"; then echo "  MISS: $q"; else PASS=$((PASS+1)); fi
 done
 echo "召回: $PASS/$TOTAL"
+
+# 候选用例区:新词先在这里实测,HIT 才有资格并入上面的基线(基线必须从绿开始)。
+# 已淘汰:早报(message_send 的内容历史上不入 episodes;修复后可重新候选)
+if [ "$1" = "--candidates" ] && [ -n "$2" ]; then
+  echo "===== 候选用例实测 ====="
+  for q in "${@:2}"; do
+    r=$(ask "/memory $q")
+    if echo "$r" | grep -q "没找到"; then echo "  MISS: $q"; else echo "  HIT:  $q"; fi
+  done
+fi
 echo "embedding 积压: $(sqlite3 $DB 'SELECT COUNT(*) FROM episodes WHERE embedding IS NULL')"
 echo "episodes 总数: $(sqlite3 $DB 'SELECT COUNT(*) FROM episodes')"
 echo "user-facts 行数: $(wc -l < $MEM/user-facts.md)  (持续膨胀=consolidation 去重失效)"
