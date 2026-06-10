@@ -31,6 +31,9 @@ export interface MuConfig {
       provider: 'zhipu' | 'duckduckgo'
       api_key?: string
       base_url?: string
+      // MiniMax Coding Plan 的 /v1/coding_plan/search(套餐内,与 fallback 模型同一把 sk-cp key)
+      minimax_api_key?: string
+      minimax_base_url?: string
     }
   }
   wechat?: {

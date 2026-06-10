@@ -1,8 +1,9 @@
 import type { ToolDef } from '../../core/types.js'
 
-// web_search 三级降级:智谱(配了 key 且有余额)→ 必应中国结果页直爬 → DuckDuckGo。
-// 必应是主力兜底:xpark 在国内,DDG 实测连不上(06-10),智谱按量计费没充值,
-// cn.bing.com 无 key 可达且稳定返回 10 条。页面结构变了 bingSearch 返回 null 自动落到 DDG。
+// web_search 四级降级:智谱(配了 key 且有余额)→ MiniMax(Coding Plan 套餐内,主力)
+// → 必应中国结果页直爬 → DuckDuckGo。
+// MiniMax 是结构化搜索 API(organic 带摘要和日期),质量优于爬 bing 页面;
+// xpark 在国内,DDG 实测连不上(06-10),智谱按量计费没充值,bing 是无 key 兜底。
 export const webSearchTool: ToolDef = {
   name: 'web_search',
   description: '搜索引擎查询。想知道实时信息、查个东西时用',
@@ -18,10 +19,39 @@ export const webSearchTool: ToolDef = {
       const r = await zhipuSearch(q, cfg.api_key, cfg.base_url)
       if (r) { ctx.log(`智谱搜了: ${q}`); return { success: true, output: r } }
     }
+    if (cfg?.minimax_api_key) {
+      const m = await minimaxSearch(q, cfg.minimax_api_key, cfg.minimax_base_url)
+      if (m) { ctx.log(`搜了: ${q}`); return { success: true, output: m } }
+    }
     const b = await bingSearch(q)
     if (b) { ctx.log(`搜了: ${q}`); return { success: true, output: b } }
     return duckduckgo(q, ctx.log)
   },
+}
+
+// MiniMax Coding Plan 自带搜索(mmx search query 的同一端点):响应 {organic:[{title,snippet,link,date}]}。
+// export 仅供 test-search.ts 对照验证
+export async function minimaxSearch(query: string, apiKey: string, baseUrl?: string): Promise<string | null> {
+  try {
+    const base = (baseUrl || 'https://api.minimax.chat').replace(/\/$/, '')
+    const resp = await fetch(`${base}/v1/coding_plan/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ q: query }),
+      signal: AbortSignal.timeout(20000),
+    })
+    if (!resp.ok) { console.error(`[web_search] minimax HTTP ${resp.status}`); return null }
+    const data = await resp.json() as { organic?: Array<{ title?: string; snippet?: string; link?: string; date?: string }> }
+    const results = data.organic ?? []
+    if (results.length === 0) return null
+    const lines = results.slice(0, 5).map((r, i) =>
+      `${i + 1}. ${r.title ?? ''}${r.date ? ` (${r.date})` : ''}\n${(r.snippet ?? '').slice(0, 200)}\n${r.link ?? ''}`
+    )
+    return lines.join('\n\n').slice(0, 4000)
+  } catch (err) {
+    console.error(`[web_search] minimax ${(err as Error).message}`)
+    return null
+  }
 }
 
 // 必应中国 SERP 是单行 HTML,结果块是 <li class="b_algo">…</li>,标题/摘要里混着
