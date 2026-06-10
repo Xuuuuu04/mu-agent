@@ -340,8 +340,8 @@ export class AgentLoop {
     } else if (this.scheduler && !this.scheduler.getStatus().sleeping) {
       // BEHAVIOR_RULES 一直宣称"不写 [WAKE] 则使用默认间隔",但这个分支此前不存在:
       // 消息打断闹钟后她忘写 [WAKE],就没有任何 pending wake,唤醒链全靠 cron 数小时后兜底。
-      // 默认 30 分钟,clamp 会按夜间/困倦自动抬高
-      this.scheduler.scheduleNext({ seconds: 1800, reason: '没定下次醒来,先按默认歇一会', activity_type: 'rest' })
+      // 默认 15 分钟(哥哥要求高频活跃,token 管够),clamp 会按夜间/困倦自动抬高
+      this.scheduler.scheduleNext({ seconds: 900, reason: '没定下次醒来,先按默认歇一会', activity_type: 'rest' })
     }
 
     // 给还没算 embedding 的记忆补算(有 embedding 服务才做)

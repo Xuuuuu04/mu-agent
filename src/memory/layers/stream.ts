@@ -2,9 +2,9 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { StreamEntry } from '../../core/types.js'
 
-// 她一天醒十几次,8 条意识流意味着上午想的事晚上就滚没了;守夜期实测一天写 9 条,
-// 16 条不足两天——28 条给她约三天的思绪连续性(自主活动的"接着做"靠这个)
-const MAX_ENTRIES = 28
+// 意识流窗口随活跃度同步放宽:06-10 哥哥把唤醒密度拉满(min 120s/max 3600s),
+// 她一天可能醒 30-50 次,48 条保住至少一整天的思绪连续性(自主活动的"接着做"靠这个)
+const MAX_ENTRIES = 48
 const ACTIVITY_WINDOW = 10
 
 export class StreamLayer {
