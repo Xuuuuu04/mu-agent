@@ -180,18 +180,14 @@ async def _handle(msg):
         await _typing(sender, ctx or None, 0)  # 停"正在输入"
     if not reply:
         return
-    # 按空行拆成几条发,像真人连发。微信反作弊敏感:最多 3 段、间隔 2.5s,超出合并
-    chunks = [c.strip() for c in reply.split("\n\n") if c.strip()]
-    if len(chunks) > 3:
-        chunks = chunks[:2] + ["\n\n".join(chunks[2:])]
-    for j, chunk in enumerate(chunks):
-        # 第一条用 inbound 的 fresh token(stale token 会被静默丢弃);
-        # 后续条传 None,_send_to 会从 store 取上一次发送返回的最新 token
-        result = await _send_to(sender, chunk, context_token=(ctx or None) if j == 0 else None)
-        ec = result.get("errcode", 0)
-        print(f"[wechat-bridge] 回复 {sender[:8]} 第{j + 1}/{len(chunks)}条 errcode={ec}", flush=True)
-        if j < len(chunks) - 1:
-            await asyncio.sleep(2.5)
+    # 微信侧不拆条,整条发。曾按空行拆最多 3 段(像真人连发)——06-10 03:49 上线,
+    # 当天 03:13 后账号即被风控降级:typing 能过、正文全部静默扣下(errcode=0 且
+    # 照常返新 token,协议层完全无感),9 小时+全部回复不可见。单条是降级前
+    # 最后一条送达的形态。"真人感"不值得拿整个通道的可用性去换;
+    # QQ 官方 bot 无此风控,拆条保留在 qq_bridge
+    result = await _send_to(sender, reply, context_token=ctx or None)
+    ec = result.get("errcode", 0)
+    print(f"[wechat-bridge] 回复 {sender[:8]} errcode={ec}", flush=True)
 
 
 # 沐主动消息走这里:POST /send {text} → 发给最近对话的哥哥
