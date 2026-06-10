@@ -278,6 +278,12 @@ export class WebhookGateway implements GatewayAdapter {
 
   private async handleMessage(req: HttpReq, res: ServerResponse): Promise<void> {
     const parsed = JSON.parse(await readBody(req))
+    // 空文本直接拒收:否则会打断她的闹钟+空跑一整个 LLM cycle
+    // (06-10 一条 schema 错误的测试 POST 就这样吵醒过她)
+    if (!parsed.text || !String(parsed.text).trim()) {
+      this.json(res, { error: 'text is required' }, 400)
+      return
+    }
     // 加自增后缀，避免同毫秒并发请求 msgId 碰撞导致 pendingResponses 串号/覆盖
     const msgId = `wh_${Date.now().toString(36)}_${(this.msgSeq++).toString(36)}`
     const msg: IncomingMessage = {
