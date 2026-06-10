@@ -13,6 +13,13 @@ export interface CommandDeps {
   uptimeSeconds: () => number
 }
 
+// 命令判断单独导出:mu.ts 入队前用它决定要不要打断沐的闹钟。
+// 命令是发给系统的(查状态/清会话),不是哥哥来说话,不该偷走她定好的"下次醒来"
+// (06-10 上午 12 条命令消息清掉闹钟又不重设,她睡过了头)
+export function isCommandText(text: string): boolean {
+  return (text || '').trim().replace(/^／/, '/').startsWith('/')
+}
+
 // 拦截 / 命令。是命令就直接读记忆系统返回结果(不走 LLM);不是命令返回 null。
 // 命令对应六层记忆的不同层:/new 清 L2 会话但保留 L3/L4 长期记忆,/todo 读 L3 承诺,等。
 export function tryCommand(text: string, deps: CommandDeps): string | null {
