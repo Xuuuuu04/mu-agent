@@ -16,6 +16,7 @@ QQ 官方机器人(api.sgroup.qq.com):WebSocket 网关收消息 + REST 发消息
   QQ_APP_ID / QQ_CLIENT_SECRET
 """
 import asyncio
+import builtins as _builtins
 import json
 import os
 import sys
@@ -23,6 +24,11 @@ import time
 import uuid
 import urllib.request
 from collections import deque
+from datetime import datetime as _dt
+
+
+def print(*args, **kw):  # noqa: A001 —— 全文件日志统一带时间戳(06-10 排查回复蒸发时无时间戳吃过亏)
+    _builtins.print(f"[{_dt.now():%m-%d %H:%M:%S}]", *args, **kw)
 
 HERMES_SP = os.environ.get(
     "HERMES_SITE_PACKAGES",
@@ -328,6 +334,44 @@ async def _ws_loop():
 
 # 沐主动消息:POST /send {text?, image?} → 主动发给最近对话的哥哥(不带 msg_id)
 # image 是本地图片路径(mu 和 bridge 同机),有 image 先发图再发文字
+def _to_silk(audio_path: str) -> str:
+    """任意音频(mp3/wav)→ QQ 认的 silk。ffmpeg 转 24k 单声道 pcm,pilk 加 tencent 头。
+    同步阻塞(几百 ms 量级),调用方放 executor。"""
+    import subprocess
+    import pilk
+    base = audio_path.rsplit(".", 1)[0]
+    pcm, silk = f"{base}.pcm", f"{base}.silk"
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", audio_path, "-f", "s16le", "-ar", "24000", "-ac", "1", pcm],
+        capture_output=True, check=True,
+    )
+    pilk.encode(pcm, silk, pcm_rate=24000, tencent=True)
+    os.unlink(pcm)
+    return silk
+
+
+async def _send_c2c_voice(openid: str, audio_path: str, reply_to: "str | None" = None, seq: int = 1) -> dict:
+    """发语音。silk 之外的格式先转;base64 直传 files(file_type=3)再发富媒体(msg_type=7)。
+    沐的声音(voice_send 工具)走这条。"""
+    import base64
+    silk_path = audio_path if audio_path.endswith(".silk") else \
+        await asyncio.get_event_loop().run_in_executor(None, _to_silk, audio_path)
+    with open(silk_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    up = await _api("POST", f"/v2/users/{openid}/files", {
+        "file_type": 3,  # 3=语音
+        "srv_send_msg": False,
+        "file_data": b64,
+    })
+    file_info = up.get("file_info")
+    if not file_info:
+        raise RuntimeError(f"语音上传失败: {up}")
+    body = {"content": " ", "msg_type": 7, "media": {"file_info": file_info}, "msg_seq": seq if reply_to else _msg_seq()}
+    if reply_to:
+        body["msg_id"] = reply_to
+    return await _api("POST", f"/v2/users/{openid}/messages", body)
+
+
 async def _http_send(request: "web.Request") -> "web.Response":
     try:
         data = await request.json()
@@ -335,7 +379,8 @@ async def _http_send(request: "web.Request") -> "web.Response":
         return web.json_response({"error": "bad json"}, status=400)
     text = str(data.get("text") or "").strip()
     image = str(data.get("image") or "").strip()
-    if not text and not image:
+    voice = str(data.get("voice") or "").strip()
+    if not text and not image and not voice:
         return web.json_response({"error": "empty"}, status=400)
     peer = str(data.get("to") or "").strip() or _last_peer
     if not peer:
@@ -346,6 +391,11 @@ async def _http_send(request: "web.Request") -> "web.Response":
                 return web.json_response({"error": f"图片不存在: {image}"}, status=400)
             await _send_c2c_image(peer, image, reply_to=None)
             print(f"[qq-bridge] 主动发图给 {peer[:8]}: {image}", flush=True)
+        if voice:
+            if not os.path.isfile(voice):
+                return web.json_response({"error": f"音频不存在: {voice}"}, status=400)
+            await _send_c2c_voice(peer, voice, reply_to=None)
+            print(f"[qq-bridge] 主动发语音给 {peer[:8]}: {voice}", flush=True)
         if text:
             await _send_c2c(peer, text, reply_to=None)  # 主动消息,不带 msg_id
             print(f"[qq-bridge] 主动发给 {peer[:8]}: {text[:30]}", flush=True)

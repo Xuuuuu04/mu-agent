@@ -25,6 +25,7 @@ import {
   commitmentCreateTool, commitmentDoneTool, streamNoteTool, diaryWriteTool,
 } from './tools/builtin/memory-ops.js'
 import { toolCreateTool } from './tools/builtin/tool-create.js'
+import { voiceSendTool } from './tools/builtin/voice-send.js'
 import { HotReloader } from './tools/hot-reload.js'
 import { McpManager } from './tools/mcp/manager.js'
 import { guardStyle } from './soul/style-guard.js'
@@ -59,7 +60,7 @@ async function main() {
 
   const tools = new ToolRegistry()
   for (const t of [fileReadTool, fileWriteTool, fileListTool, shellExecTool, webFetchTool, webSearchTool,
-    messageSendTool, scheduleWakeTool,
+    messageSendTool, scheduleWakeTool, voiceSendTool,
     memorySaveTool, memorySearchTool, memoryUpdateTool, memoryForgetTool, knowledgeWriteTool,
     commitmentCreateTool, commitmentDoneTool, streamNoteTool, diaryWriteTool, toolCreateTool]) {
     tools.register(t, { reserved: true })

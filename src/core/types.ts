@@ -35,6 +35,14 @@ export interface MuConfig {
       minimax_api_key?: string
       minimax_base_url?: string
     }
+    // 她的声音:voice_design 定制声线 + t2a。voice_send 工具用
+    voice?: {
+      voice_id: string
+      api_key?: string
+      base_url?: string
+      model?: string
+      speed?: number
+    }
   }
   wechat?: {
     enabled: boolean

@@ -13,10 +13,16 @@
   WEIXIN_ACCOUNT_ID / WEIXIN_TOKEN / WEIXIN_BASE_URL
 """
 import asyncio
+import builtins as _builtins
 import json
 import os
 import sys
 import urllib.request
+from datetime import datetime as _dt
+
+
+def print(*args, **kw):  # noqa: A001 —— 全文件日志统一带时间戳(06-10 排查降级时无时间戳吃过亏)
+    _builtins.print(f"[{_dt.now():%m-%d %H:%M:%S}]", *args, **kw)
 
 HERMES_SP = os.environ.get(
     "HERMES_SITE_PACKAGES",
