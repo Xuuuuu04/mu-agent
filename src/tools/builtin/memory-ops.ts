@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { ToolDef, Commitment } from '../../core/types.js'
 import { absolutizeTime } from '../../memory/absolutize.js'
@@ -84,11 +84,46 @@ export const memorySearchTool: ToolDef = {
       }
     }
 
+    // 第四路:她自己的知识笔记(data/knowledge/ 270+ 篇)。identity 承诺"想起来会翻出来用",
+    // 但之前没有任何检索通路——笔记等于写进抽屉,聊到张居正想不起自己写过白银货币化
+    const noted = searchKnowledge(ctx.dataDir, query)
+    if (noted.length > 0) {
+      out.push('\n[我的笔记]')
+      out.push(...noted)
+    }
+
     if (out.length === 0) {
       return { success: true, output: `没找到关于"${query}"的记忆` }
     }
     return { success: true, output: out.join('\n') }
   },
+}
+
+// 知识笔记两级命中:标题(文件名)优先,内容次之。命中给"笔记名+摘录",
+// 全文她自己 file_read(knowledge/xxx.md)再翻——这里只负责"想起来"。
+// export 给 commands.ts 的 /memory 共用(两条检索路径保持同覆盖)
+export function searchKnowledge(dataDir: string, query: string): string[] {
+  const dir = join(dataDir, 'knowledge')
+  if (!existsSync(dir)) return []
+  const q = query.toLowerCase()
+  const out: string[] = []
+  const byContent: string[] = []
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.md')) continue
+      const title = f.replace(/\.md$/, '')
+      if (title.toLowerCase().includes(q)) {
+        out.push(`《${title}》(knowledge/${f})`)
+        continue
+      }
+      if (byContent.length >= 3) continue
+      const text = readFileSync(join(dir, f), 'utf-8').slice(0, 50_000)
+      if (!text.toLowerCase().includes(q)) continue
+      const line = text.split('\n').find(l => l.toLowerCase().includes(q))?.trim().slice(0, 90) ?? ''
+      byContent.push(`《${title}》: ${line}`)
+    }
+  } catch { /* 单文件读挂不影响其余三路 */ }
+  return [...out.slice(0, 3), ...byContent].slice(0, 5)
 }
 
 export const commitmentCreateTool: ToolDef = {

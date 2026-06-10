@@ -4,6 +4,7 @@ import type { MemoryStore } from '../memory/store.js'
 import type { Scheduler } from './scheduler.js'
 import type { Commitment, MoodState } from './types.js'
 import { relativeTime } from '../memory/layers/temporal.js'
+import { searchKnowledge } from '../tools/builtin/memory-ops.js'
 
 export interface CommandDeps {
   dataDir: string
@@ -126,6 +127,10 @@ function memoryText(deps: CommandDeps, query: string): string {
     if (!existsSync(p)) continue
     const hit = readFileSync(p, 'utf-8').split('\n').find(l => l.trim() && l.includes(query))
     if (hit) lines.push(`[档案] ${hit.trim().slice(0, 60)}`)
+  }
+  // 她的知识笔记(第四路,与 memory_search 工具同覆盖)
+  for (const k of searchKnowledge(deps.dataDir, query).slice(0, 3)) {
+    lines.push(`[笔记] ${k.slice(0, 80)}`)
   }
   if (lines.length === 0) return `没找到关于"${query}"的记忆`
   return `关于"${query}":\n` + lines.join('\n')
