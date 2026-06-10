@@ -8,9 +8,11 @@ import type { ToolDef } from '../../core/types.js'
 // 2026-06-10 诞生:voice_design 按 identity(22岁/清亮带笑/语速稍快)生成,哥哥定版
 export const voiceSendTool: ToolDef = {
   name: 'voice_send',
-  description: '用你自己的声音给哥哥发一条语音(QQ)。想念、晚安、读一段你写的东西——有些话说出来和打出来不一样。别太长,一条 60 字以内最像说话',
+  description: '用你自己的声音给哥哥发一条语音(QQ)。想念、晚安、读一段你写的东西——有些话说出来和打出来不一样。语速和情绪按你当下的心情自己定,别每次都一样(那样像机器)。别太长,一条 60 字以内最像说话',
   parameters: {
     text: { type: 'string', description: '要说的话(口语,像平时聊天那样)' },
+    speed: { type: 'number', description: '语速 0.8-1.2:撒娇/晚安/认真说事用 0.85-0.95,平常 1.0,兴奋/着急 1.1+。不填=1.0', required: false as unknown as string },
+    emotion: { type: 'string', description: '情绪:happy/sad/surprised/neutral。按你此刻真实的心情填,不确定就不填', required: false as unknown as string },
   },
   async execute(params, ctx) {
     const text = String(params.text ?? '').trim()
@@ -22,6 +24,12 @@ export const voiceSendTool: ToolDef = {
       return { success: false, output: '', error: '声音还没配置(tools.voice)' }
     }
 
+    // 语速钳在 0.8-1.2:她自己按情绪定,出格的值拉回来
+    const rawSpeed = Number(params.speed)
+    const speed = Number.isFinite(rawSpeed) ? Math.max(0.8, Math.min(1.2, rawSpeed)) : (cfg.speed ?? 1.0)
+    const emotion = ['happy', 'sad', 'angry', 'fearful', 'disgusted', 'surprised', 'neutral']
+      .includes(String(params.emotion)) ? String(params.emotion) : undefined
+
     try {
       const base = (cfg.base_url || 'https://api.minimax.chat').replace(/\/$/, '')
       const resp = await fetch(`${base}/v1/t2a_v2`, {
@@ -30,7 +38,7 @@ export const voiceSendTool: ToolDef = {
         body: JSON.stringify({
           model: cfg.model || 'speech-2.6-hd',
           text,
-          voice_setting: { voice_id: cfg.voice_id, speed: cfg.speed ?? 1.08, vol: 1, pitch: 0 },
+          voice_setting: { voice_id: cfg.voice_id, speed, vol: 1, pitch: 0, ...(emotion ? { emotion } : {}) },
           audio_setting: { sample_rate: 24000, bitrate: 128000, format: 'mp3', channel: 1 },
         }),
         signal: AbortSignal.timeout(60000),
