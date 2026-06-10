@@ -234,6 +234,9 @@ async def _handle_c2c(d: dict):
 
     reply = await asyncio.get_event_loop().run_in_executor(None, _ask_mu, content, openid)
     if not reply:
+        # 空回复也要留痕:10:54 一次"已读不回"事故里,这个静默 return 是三层静默的最后一层,
+        # 日志全程无迹可寻。空回复有两种:mu 超时窗口已关(她稍后主动补发)或正文蒸发(mu 侧已修)
+        print(f"[qq-bridge] 沐没回话(空response),不发 {openid[:8]}", flush=True)
         return
     try:
         await _send_reply_chunks(openid, reply, msg_id)  # 被动回复,按段拆多条

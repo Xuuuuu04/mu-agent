@@ -147,6 +147,7 @@ export class AgentLoop {
       let messages = this.buildMessages()
       let turns = 0
       let finalText = ''
+      let lastSubstantive = ''   // 最近一轮去掉 WAKE/MOOD 指令后仍有内容的文本
 
       // cycle 时间预算:20 轮 × GLM 慢推理能跑半小时,期间哥哥的消息全在排队(失联感)。
       // 哥哥在等的 cycle 5 分钟收尾;自主活动没人等,给 15 分钟做深度的事
@@ -176,11 +177,14 @@ export class AgentLoop {
 
         if (textBlocks.length > 0) {
           finalText = textBlocks.map(b => b.text).join('')
+          if (this.cleanResponse(finalText)) lastSubstantive = finalText
         }
 
         if (toolUseBlocks.length === 0) {
-          // 存进会话历史前先抹掉 WAKE/MOOD 指令，否则模型下一轮看到自己上次的指令格式会复读
-          this.sessionHistory.push({ role: 'assistant', content: this.cleanResponse(finalText) })
+          // 存进会话历史前先抹掉 WAKE/MOOD 指令，否则模型下一轮看到自己上次的指令格式会复读。
+          // 清洗后为空(纯指令轮)就不 push——正文已随带 tool 的轮存进历史,空 assistant 消息没价值
+          const cleanedTurn = this.cleanResponse(finalText)
+          if (cleanedTurn) this.sessionHistory.push({ role: 'assistant', content: cleanedTurn })
           break
         }
 
@@ -238,6 +242,15 @@ export class AgentLoop {
 
       if (turns >= this.config.agent.max_turns_per_cycle && !finalText) {
         console.warn(`[agent-loop] 达到 max_turns(${turns}) 仍未产出最终回复`)
+      }
+
+      // GLM 多轮工具后,最后一轮常只剩 [WAKE:...] 指令——finalText 被覆盖成纯指令,
+      // 清洗后为空,中间轮生成的正文整段蒸发,用户视角"已读不回"(06-10 10:54 实锤:
+      // 687 token 查了一堆去处,回复却是空)。回退:正文取最近的实质文本,指令保留给 postProcess
+      if (!this.cleanResponse(finalText) && lastSubstantive) {
+        const directives = finalText.match(/\[(?:WAKE|MOOD):[^\]\n]*\]?/g)?.join(' ') ?? ''
+        console.warn('[agent-loop] 末轮只有指令无正文,回退到上一轮实质内容')
+        finalText = directives ? `${lastSubstantive}\n${directives}` : lastSubstantive
       }
 
       this.postProcess(finalText, trigger).catch(err =>
