@@ -14,7 +14,10 @@
     "start": "tsx src/mu.ts",
     "mu": "tsx src/cli.ts",
     "build": "tsup src/mu.ts --format esm --dts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test:watch": "tsx --test --watch \"src/**/*.test.ts\"",
+    "pretest": "tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",

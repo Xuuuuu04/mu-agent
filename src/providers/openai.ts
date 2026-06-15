@@ -90,7 +90,7 @@ export function createOpenAIProvider(config: ProviderConfig): ModelProvider {
 // GLM 比 OpenAI 严格:anyOf/oneOf/allOf、format、additionalProperties、property 级的
 // 非法 required(本该是 object 级数组)等都会让整个请求 400(code 1210)。
 // 简化策略:anyOf/oneOf 取第一个非 null 分支提上来,删掉其余高级关键字。
-function sanitizeSchema(schema: unknown): unknown {
+export function sanitizeSchema(schema: unknown): unknown {
   if (!schema || typeof schema !== 'object') return schema
   if (Array.isArray(schema)) return schema.map(sanitizeSchema)
   let s: Record<string, unknown> = { ...(schema as Record<string, unknown>) }

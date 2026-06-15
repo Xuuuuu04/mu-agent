@@ -180,13 +180,13 @@ export class AgentLoop {
 
         if (textBlocks.length > 0) {
           finalText = textBlocks.map(b => b.text).join('')
-          if (this.cleanResponse(finalText)) lastSubstantive = finalText
+          if (cleanResponse(finalText)) lastSubstantive = finalText
         }
 
         if (toolUseBlocks.length === 0) {
           // 存进会话历史前先抹掉 WAKE/MOOD 指令，否则模型下一轮看到自己上次的指令格式会复读。
           // 清洗后为空(纯指令轮)就不 push——正文已随带 tool 的轮存进历史,空 assistant 消息没价值
-          const cleanedTurn = this.cleanResponse(finalText)
+          const cleanedTurn = cleanResponse(finalText)
           if (cleanedTurn) this.sessionHistory.push({ role: 'assistant', content: cleanedTurn })
           break
         }
@@ -250,7 +250,7 @@ export class AgentLoop {
       // GLM 多轮工具后,最后一轮常只剩 [WAKE:...] 指令——finalText 被覆盖成纯指令,
       // 清洗后为空,中间轮生成的正文整段蒸发,用户视角"已读不回"(06-10 10:54 实锤:
       // 687 token 查了一堆去处,回复却是空)。回退:正文取最近的实质文本,指令保留给 postProcess
-      if (!this.cleanResponse(finalText) && lastSubstantive) {
+      if (!cleanResponse(finalText) && lastSubstantive) {
         const directives = finalText.match(/\[(?:WAKE|MOOD):[^\]\n]*\]?/g)?.join(' ') ?? ''
         console.warn('[agent-loop] 末轮只有指令无正文,回退到上一轮实质内容')
         finalText = directives ? `${lastSubstantive}\n${directives}` : lastSubstantive
@@ -275,7 +275,7 @@ export class AgentLoop {
       this.persistSession()
 
       return {
-        response: this.cleanResponse(finalText),
+        response: cleanResponse(finalText),
         tool_calls_made: toolCallCount,
         tokens_used: { input: totalInput, output: totalOutput, cache_read: totalCacheRead },
         duration_ms: Date.now() - start,
@@ -306,14 +306,14 @@ export class AgentLoop {
   private async postProcess(response: string, trigger: WakeTrigger): Promise<void> {
     // 顺序要紧：先在原文上抽指令（下面 extractMood/extractWakeDirective 依赖原文），
     // 再用清洗后的文本写记忆/抽实体——否则 [WAKE]/[MOOD] 会污染长期记忆和实体表
-    const streamEntry = this.extractStreamEntry(response)
+    const streamEntry = extractStreamEntry(response)
     if (streamEntry) {
       this.assembler.streamLayer.append(streamEntry.content, streamEntry.activity)
     }
 
     // style-guard 只挡发给用户的消息,自主 cycle 的内心独白没人挡,
     // markdown 粗体曾直接进了长期记忆(9 条)——入库前统一清一遍
-    const rawCleaned = this.cleanResponse(response)
+    const rawCleaned = cleanResponse(response)
     const cleaned = rawCleaned ? guardStyle(rawCleaned).cleaned : ''
     if (cleaned) {
       this.store?.insertEpisode({
@@ -331,12 +331,12 @@ export class AgentLoop {
     }
 
     // agent 在回复里写了 [MOOD:情绪:原因] 就更新心情
-    const mood = this.extractMood(response)
+    const mood = extractMood(response)
     if (mood) {
       updateMood(this.config.paths.data, mood.mood, mood.reason)
     }
 
-    const wakeDirective = this.extractWakeDirective(response)
+    const wakeDirective = extractWakeDirective(response)
     if (wakeDirective && this.scheduler) {
       this.scheduler.scheduleNext(wakeDirective)
       this.assembler.setLastWake(new Date(), wakeDirective.activity_type)
@@ -399,12 +399,6 @@ export class AgentLoop {
       const vec = await this.embedding.embed(ep.content)
       if (vec) this.store.updateEmbedding(ep.id, EmbeddingService.toBuffer(vec))
     }
-  }
-
-  private extractMood(text: string): { mood: string; reason: string } | null {
-    const m = text.match(/\[MOOD:([^:\]\n]+):?([^\]\n]*)\]?/)
-    if (!m) return null
-    return { mood: m[1]!.trim(), reason: (m[2] ?? '').trim() }
   }
 
   // 距上次活动超过超时时间,把当前会话历史归档(后台生成摘要),清空开新会话
@@ -473,40 +467,6 @@ export class AgentLoop {
     this.opsAlert = fn
   }
 
-  private extractStreamEntry(text: string): { content: string; activity?: string } | null {
-    if (!text) return null
-    // 长度判断必须在清洗之后:纯 [WAKE][MOOD] 指令的回复清洗完是空的,
-    // 旧逻辑在清洗前判长度,导致意识流里出现空白条目
-    const clean = text
-      .replace(/\[WAKE:[^\]\n]*\]?/g, '')
-      .replace(/\[MOOD:[^\]\n]*\]?/g, '')
-      .replace(/\n+/g, ' ')
-      .trim()
-    if (clean.length < 5) return null
-    return { content: truncateAtBoundary(clean, 200), activity: 'chat' }
-  }
-
-  private extractWakeDirective(text: string): { seconds: number; reason: string; activity_type: string } | null {
-    // reason 段必须挡住 ]:她写 [WAKE:300:催饭/active](用/合并漏了一段)时,
-    // 旧正则 [^:]* 会贪婪吞过 ] 一路吃到下一个 [MOOD 的冒号,reason 变成"催饭/active] [MOOD"。
-    // activity 段改可选——缺了按 rest 算,别让整条指令作废
-    const match = text.match(/\[WAKE:(\d+):([^:\]\n]*)(?::([^\]\n]*))?\]?/)
-    if (!match) return null
-    return {
-      seconds: parseInt(match[1]!),
-      reason: match[2]!.trim(),
-      activity_type: (match[3] ?? '').trim() || 'rest',
-    }
-  }
-
-  private cleanResponse(text: string): string {
-    // 把内部指令标记从给用户看的文本里抹掉
-    return text
-      .replace(/\[WAKE:[^\]\n]*\]?/g, '')
-      .replace(/\[MOOD:[^\]\n]*\]?/g, '')
-      .trim()
-  }
-
   clearSession(): void {
     this.sessionHistory = []
     this.sessionId = `s_${Date.now().toString(36)}`
@@ -550,7 +510,7 @@ function isSafeStart(m: ChatMessage): boolean {
 }
 
 // 意识流截断:超长时尽量在标点/空格处断,别把一句话腰斩("也可能已"这种)
-function truncateAtBoundary(text: string, max: number): string {
+export function truncateAtBoundary(text: string, max: number): string {
   if (text.length <= max) return text
   const slice = text.slice(0, max)
   const boundary = Math.max(
@@ -558,6 +518,49 @@ function truncateAtBoundary(text: string, max: number): string {
     ...['。', '!', '?', '!', '?', ',', ',', ' ', '…'].map(p => slice.lastIndexOf(p)),
   )
   return boundary > max * 0.6 ? slice.slice(0, boundary + 1).trim() : slice
+}
+
+// ── 模型回复里的内联指令解析与清洗(纯函数,characterization test 锁住容错行为)──
+
+// [MOOD:情绪:原因] → { mood, reason }。reason 段挡住 ] 防贪婪吞过下个指令
+export function extractMood(text: string): { mood: string; reason: string } | null {
+  const m = text.match(/\[MOOD:([^:\]\n]+):?([^\]\n]*)\]?/)
+  if (!m) return null
+  return { mood: m[1]!.trim(), reason: (m[2] ?? '').trim() }
+}
+
+// [WAKE:秒数:原因:活动] → 下次唤醒。reason 段必须挡住 ]:她写 [WAKE:300:催饭/active]
+// (用/合并漏了一段)时,旧正则 [^:]* 会贪婪吞过 ] 一路吃到下一个 [MOOD 的冒号。
+// activity 段可选——缺了按 rest 算,别让整条指令作废
+export function extractWakeDirective(text: string): { seconds: number; reason: string; activity_type: string } | null {
+  const match = text.match(/\[WAKE:(\d+):([^:\]\n]*)(?::([^\]\n]*))?\]?/)
+  if (!match) return null
+  return {
+    seconds: parseInt(match[1]!),
+    reason: match[2]!.trim(),
+    activity_type: (match[3] ?? '').trim() || 'rest',
+  }
+}
+
+// 从回复里抽意识流条目。长度判断必须在清洗之后:纯 [WAKE][MOOD] 指令的回复清洗完是空的,
+// 旧逻辑在清洗前判长度,导致意识流里出现空白条目
+export function extractStreamEntry(text: string): { content: string; activity?: string } | null {
+  if (!text) return null
+  const clean = text
+    .replace(/\[WAKE:[^\]\n]*\]?/g, '')
+    .replace(/\[MOOD:[^\]\n]*\]?/g, '')
+    .replace(/\n+/g, ' ')
+    .trim()
+  if (clean.length < 5) return null
+  return { content: truncateAtBoundary(clean, 200), activity: 'chat' }
+}
+
+// 把内部指令标记从给用户看的文本里抹掉
+export function cleanResponse(text: string): string {
+  return text
+    .replace(/\[WAKE:[^\]\n]*\]?/g, '')
+    .replace(/\[MOOD:[^\]\n]*\]?/g, '')
+    .trim()
 }
 
 function jsonOrNull(arr: string[]): string | null {

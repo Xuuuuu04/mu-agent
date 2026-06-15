@@ -173,26 +173,18 @@ export class Scheduler {
     }
   }
 
+  // 采集时间/心情/config 这些副作用源,纯算法委托给 clampWake(可单测)
   private clamp(seconds: number): number {
-    const hour = new Date().getHours()
-    // 深夜判断要支持跨午夜（如 23-7），写法对齐 proactive.ts 的 quiet 时段
-    const ns = this.config.scheduler.night_start_hour
-    const ne = this.config.scheduler.night_end_hour
-    const isNight = ns < ne ? (hour >= ns && hour < ne) : (hour >= ns || hour < ne)
-
-    let min = this.config.scheduler.min_wake_seconds
-    const max = this.config.scheduler.max_wake_seconds
-
-    if (isNight) {
-      min = this.config.scheduler.night_min_wake_seconds
-    }
-
-    const mood = this.loadMood()
-    if (mood?.current === 'sleepy') {
-      min = Math.max(min, 1800)
-    }
-
-    return Math.max(min, Math.min(max, seconds))
+    const s = this.config.scheduler
+    return clampWake(seconds, {
+      hour: new Date().getHours(),
+      nightStart: s.night_start_hour,
+      nightEnd: s.night_end_hour,
+      min: s.min_wake_seconds,
+      max: s.max_wake_seconds,
+      nightMin: s.night_min_wake_seconds,
+      moodSleepy: this.loadMood()?.current === 'sleepy',
+    })
   }
 
   private loadMood(): MoodState | null {
@@ -204,4 +196,25 @@ export class Scheduler {
       return null
     }
   }
+}
+
+export interface ClampWakeConfig {
+  hour: number          // 当前小时(0-23)
+  nightStart: number    // 深夜起始小时
+  nightEnd: number      // 深夜结束小时
+  min: number           // 正常时段最小唤醒间隔(秒)
+  max: number           // 最大唤醒间隔(秒)
+  nightMin: number      // 深夜最小唤醒间隔(秒)
+  moodSleepy: boolean   // 当前心情是否 sleepy
+}
+
+// 把建议的唤醒秒数夹到合理区间。纯算法,无副作用,便于单测。
+// 深夜判断支持跨午夜(如 23-7),写法对齐 proactive.ts 的 quiet 时段;sleepy 时下限抬到 ≥30 分钟。
+export function clampWake(seconds: number, c: ClampWakeConfig): number {
+  const isNight = c.nightStart < c.nightEnd
+    ? (c.hour >= c.nightStart && c.hour < c.nightEnd)
+    : (c.hour >= c.nightStart || c.hour < c.nightEnd)
+  let min = isNight ? c.nightMin : c.min
+  if (c.moodSleepy) min = Math.max(min, 1800)
+  return Math.max(min, Math.min(c.max, seconds))
 }
