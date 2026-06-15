@@ -1,6 +1,6 @@
 // trimHistory 的对照验证(手动跑: tsx src/test-trim.ts)
 // 不变式:裁剪结果里 1) 不存在孤儿 tool_result 2) 首条是纯文本 user(或保留完整工具链)
-import { trimHistory } from './core/agent-loop.js'
+import { trimHistory } from './core/history.js'
 import type { ChatMessage, ContentBlock } from './core/types.js'
 
 const u = (text: string): ChatMessage => ({ role: 'user', content: text })
