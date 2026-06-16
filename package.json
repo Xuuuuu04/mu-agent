@@ -15,7 +15,7 @@
     "mu": "tsx src/cli.ts",
     "build": "tsup src/mu.ts --format esm --dts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test": "tsx --test --test-force-exit \"src/**/*.test.ts\"",
     "test:watch": "tsx --test --watch \"src/**/*.test.ts\"",
     "pretest": "tsc --noEmit"
   },
