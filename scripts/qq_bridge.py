@@ -23,8 +23,9 @@ import sys
 import time
 import uuid
 import urllib.request
-from collections import deque
 from datetime import datetime as _dt
+
+from bridge_pure import split_reply_chunks, is_authorized, extract_image_urls, ask_payload, Dedup
 
 
 def print(*args, **kw):  # noqa: A001 —— 全文件日志统一带时间戳(06-10 排查回复蒸发时无时间戳吃过亏)
@@ -67,8 +68,7 @@ _ws = None
 _last_seq = None
 _heartbeat_interval = 30.0
 _running = True
-_seen_msgids: set = set()           # 收消息去重(QQ 会重推)
-_seen_order: deque = deque()        # 去重集合的插入顺序，满 1000 时 FIFO 淘汰最老一条
+_dedup = Dedup(1000)                # 收消息去重(QQ 会重推),FIFO 满 1000 淘汰最老
 
 
 def _load_peer() -> "str | None":
@@ -155,13 +155,8 @@ async def _send_c2c_image(openid: str, image_path: str, reply_to: "str | None" =
 
 async def _send_reply_chunks(openid: str, reply: str, msg_id: str) -> None:
     """按空行把回复拆成多条发(她的风格本来就是一个想法一条),像真人连发。
-    QQ 同一 msg_id 被动回复最多 5 条:前 4 条独立发,剩余合并进第 5 条。"""
-    chunks = [c.strip() for c in reply.split("\n\n") if c.strip()]
-    if len(chunks) <= 1:
-        await _send_c2c(openid, reply, reply_to=msg_id, seq=1)
-        return
-    if len(chunks) > 5:
-        chunks = chunks[:4] + ["\n\n".join(chunks[4:])]
+    拆条规则(含 ≤1/超 5 合并)见 bridge_pure.split_reply_chunks。"""
+    chunks = split_reply_chunks(reply)
     for j, ch in enumerate(chunks):
         await _send_c2c(openid, ch, reply_to=msg_id, seq=j + 1)
         if j < len(chunks) - 1:
@@ -189,9 +184,7 @@ def _describe_image(url: str) -> str:
 
 
 def _ask_mu(text: str, sender: str) -> str:
-    body = json.dumps(
-        {"text": text, "sender_name": "哥哥", "sender_id": sender, "source": "qq"}
-    ).encode("utf-8")
+    body = json.dumps(ask_payload(text, sender, "qq")).encode("utf-8")
     req = urllib.request.Request(MU_WEBHOOK, data=body, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
@@ -201,29 +194,16 @@ def _ask_mu(text: str, sender: str) -> str:
         return ""
 
 
-def _is_dup(msg_id: str) -> bool:
-    if not msg_id or msg_id in _seen_msgids:
-        return True
-    _seen_msgids.add(msg_id)
-    _seen_order.append(msg_id)
-    # 满 1000 时只淘汰最老一条(FIFO)；整体 clear 会让 QQ 重推的旧 msg_id 被当新消息重复处理
-    if len(_seen_order) > 1000:
-        _seen_msgids.discard(_seen_order.popleft())
-    return False
-
-
 async def _handle_c2c(d: dict):
     global _last_peer
     openid = str((d.get("author") or {}).get("user_openid") or "").strip()
     content = str(d.get("content") or "").strip()
     msg_id = str(d.get("id") or "").strip()
     # 图片消息:content 可能为空但 attachments 有图,转成文字描述给沐(她的眼睛)
-    atts = d.get("attachments") or []
-    img_urls = [a.get("url") for a in atts
-                if str(a.get("content_type", "")).startswith("image") and a.get("url")]
+    img_urls = extract_image_urls(d.get("attachments"))
     if not openid or (not content and not img_urls):
         return
-    if MASTER_OPENID and openid != MASTER_OPENID:
+    if not is_authorized(openid, MASTER_OPENID):
         print(f"[qq-bridge] 忽略陌生人 {openid[:8]} 的消息", flush=True)
         return
     _last_peer = openid
@@ -279,7 +259,7 @@ async def _dispatch(payload: dict):
         t = payload.get("t")
         d = payload.get("d") or {}
         if t == "C2C_MESSAGE_CREATE":
-            if not _is_dup(str(d.get("id") or "")):
+            if not _dedup.is_dup(str(d.get("id") or "")):
                 asyncio.create_task(_handle_c2c(d))
         elif t == "READY":
             print("[qq-bridge] READY —— QQ 已连上 ✓", flush=True)

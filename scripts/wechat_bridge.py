@@ -20,6 +20,8 @@ import sys
 import urllib.request
 from datetime import datetime as _dt
 
+from bridge_pure import is_authorized, ask_payload, is_delivered
+
 
 def print(*args, **kw):  # noqa: A001 —— 全文件日志统一带时间戳(06-10 排查降级时无时间戳吃过亏)
     _builtins.print(f"[{_dt.now():%m-%d %H:%M:%S}]", *args, **kw)
@@ -87,9 +89,7 @@ _last_peer = _load_peer()
 
 
 def _ask_mu(text: str, sender: str) -> str:
-    body = json.dumps(
-        {"text": text, "sender_name": "哥哥", "sender_id": sender, "source": "wechat"}
-    ).encode("utf-8")
+    body = json.dumps(ask_payload(text, sender, "wechat")).encode("utf-8")
     req = urllib.request.Request(MU_WEBHOOK, data=body, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
@@ -150,7 +150,7 @@ async def _handle(msg):
     sender = str(msg.get("from_user_id") or "").strip()
     if not sender or sender == ACCOUNT_ID:
         return
-    if MASTER_ID and sender != MASTER_ID:
+    if not is_authorized(sender, MASTER_ID):
         print(f"[wechat-bridge] 忽略陌生人 {sender[:8]} 的消息", flush=True)
         return
     text = _extract_text(msg.get("item_list") or [])
@@ -211,7 +211,7 @@ async def _http_send(request: "web.Request") -> "web.Response":
     try:
         result = await _send_to(peer, text)
         ec = result.get("errcode", 0)
-        delivered = bool(result.get("context_token"))  # 返新 token 才算真投递
+        delivered = is_delivered(result)  # 返新 token 才算真投递
         flag = "投递✓" if delivered else "⚠未投递(主动推送遇 stale token,issue#35949 的硬限制)"
         print(f"[wechat-bridge] 主动发给 {peer[:8]}: {text[:30]} errcode={ec} {flag}", flush=True)
         return web.json_response({"ok": delivered, "to": peer, "errcode": ec, "delivered": delivered})
