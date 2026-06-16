@@ -59,4 +59,16 @@ function validate(config: MuConfig): void {
   if (!config.model.primary.base_url) {
     throw new Error('config: model.primary.base_url 必须配置')
   }
+  // 数值范围:负/零唤醒间隔会让她疯狂醒来,min>max 让 clamp 逻辑反转,
+  // max_turns<1 让工具循环 0 轮直接返回空回复(静默"已读不回")
+  const s = config.scheduler
+  if (s.min_wake_seconds < 1 || s.max_wake_seconds < 1 || s.cron_fallback_seconds < 1) {
+    throw new Error('config: scheduler 的唤醒间隔必须为正数')
+  }
+  if (s.min_wake_seconds > s.max_wake_seconds) {
+    throw new Error('config: scheduler.min_wake_seconds 不能大于 max_wake_seconds')
+  }
+  if (config.agent.max_turns_per_cycle < 1) {
+    throw new Error('config: agent.max_turns_per_cycle 必须 ≥1')
+  }
 }
