@@ -1,9 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import type { MuConfig, WakeTrigger, ChatMessage, ContentBlock, CycleResult } from './types.js'
+import type { MuConfig, WakeTrigger, ContentBlock, CycleResult } from './types.js'
 import { ContextAssembler } from './context-assembler.js'
 import { ModelRouter } from '../providers/router.js'
-import { sanitizeMessages } from '../providers/sanitize-messages.js'
 import { ToolRegistry } from '../tools/registry.js'
 import type { MemoryStore } from '../memory/store.js'
 import type { Scheduler } from './scheduler.js'
@@ -14,6 +12,8 @@ import { updateMood } from '../memory/layers/mood.js'
 import { guardStyle } from '../soul/style-guard.js'
 import { log } from './logger.js'
 import { tryCommand } from './commands.js'
+import { extractMood, extractWakeDirective, extractStreamEntry, cleanResponse } from './loop/directives.js'
+import { SessionStore } from './loop/session-store.js'
 
 export class AgentLoop {
   private config: MuConfig
@@ -24,17 +24,13 @@ export class AgentLoop {
   private scheduler: Scheduler | null
   private consolidation: MemoryConsolidation | null
   private embedding: EmbeddingService | null
-  private sessionHistory: ChatMessage[] = []
-  private sessionId: string
+  private session: SessionStore
   private running = false
-  private lastActivity = Date.now()
   private lastSuccessAt: Date | null = null
   private consecutiveFailures = 0
-  private compacting = false
   private sendRouter: ((source: string, text: string, imagePath?: string) => Promise<void>) | null = null
   private opsAlert: ((text: string) => Promise<void>) | null = null
   private lastOpsAlertAt = 0
-  private sessionFile: string
 
   constructor(opts: {
     config: MuConfig
@@ -54,8 +50,7 @@ export class AgentLoop {
     this.scheduler = opts.scheduler ?? null
     this.consolidation = opts.consolidation ?? null
     this.embedding = opts.embedding ?? null
-    this.sessionId = `s_${Date.now().toString(36)}`
-    this.sessionFile = join(this.config.paths.data, 'memory', 'session.json')
+    this.session = new SessionStore(join(this.config.paths.data, 'memory', 'session.json'))
   }
 
   async runCycle(trigger: WakeTrigger): Promise<CycleResult> {
@@ -69,10 +64,12 @@ export class AgentLoop {
     let totalCacheRead = 0
     let toolCallCount = 0
 
-    // 距上次活动超过 session 超时,先归档旧会话(生成摘要)再开新的。
+    // 距上次活动超过 session 超时,先归档旧会话(摘要交整合机制)再开新的。
     // lastActivity 只在 cycle 成功后更新(见 try 末尾)——失败的 cycle 不算活动,
     // 否则坏历史导致的反复失败会一直刷新计时,session 永不轮转,坏历史永生(06-09 事故)。
-    this.maybeRotateSession()
+    this.session.maybeRotate(this.config.agent.session_timeout_minutes * 60 * 1000, (oldId, hist) => {
+      this.consolidation?.summarizeSession(oldId, hist).catch(() => { /* 摘要失败不阻塞 */ })
+    })
 
     try {
       const currentInput = trigger.type === 'message' && trigger.message.content.type === 'text'
@@ -117,7 +114,7 @@ export class AgentLoop {
         // 会话历史里的 user 消息带时刻前缀:没有它,10 分钟前和 2 小时前的消息
         // 在 history 里长得一样,她对"间隔"是盲的(哥哥要求时间意识高度清晰)。
         // episodes 入库用原文——时间戳列里有,别让格式渗进长期记忆
-        this.sessionHistory.push({ role: 'user', content: `[${stamp()}] ${text}` })
+        this.session.push({ role: 'user', content: `[${stamp()}] ${text}` })
         this.assembler.setLastUserContact(new Date())
 
         this.store?.insertEpisode({
@@ -128,13 +125,13 @@ export class AgentLoop {
           content: text,
           summary: null,
           embedding: null,
-          session_id: this.sessionId,
+          session_id: this.session.sessionId,
           topic_tags: null,
           entities: jsonOrNull(extractEntities(text)),
         })
-      } else if (this.sessionHistory.length === 0) {
+      } else if (this.session.length === 0) {
         // 自主醒来且没有任何对话历史:空 messages 数组会被 GLM/Claude 拒收(2013 messages must not be empty)
-        this.sessionHistory.push({
+        this.session.push({
           role: 'user',
           content: `[${stamp()}] (你自己醒了,这会儿没有新消息。唤醒原因看上面,想做什么自己决定)`,
         })
@@ -147,7 +144,7 @@ export class AgentLoop {
         && trigger.message.content.text.length <= 20
         && !/[查帮搜找分析想念记得为什么怎么吗呢??]/.test(trigger.message.content.text)
 
-      let messages = this.buildMessages()
+      let messages = this.session.buildMessages()
       let turns = 0
       let finalText = ''
       let lastSubstantive = ''   // 最近一轮去掉 WAKE/MOOD 指令后仍有内容的文本
@@ -180,18 +177,18 @@ export class AgentLoop {
 
         if (textBlocks.length > 0) {
           finalText = textBlocks.map(b => b.text).join('')
-          if (this.cleanResponse(finalText)) lastSubstantive = finalText
+          if (cleanResponse(finalText)) lastSubstantive = finalText
         }
 
         if (toolUseBlocks.length === 0) {
           // 存进会话历史前先抹掉 WAKE/MOOD 指令，否则模型下一轮看到自己上次的指令格式会复读。
           // 清洗后为空(纯指令轮)就不 push——正文已随带 tool 的轮存进历史,空 assistant 消息没价值
-          const cleanedTurn = this.cleanResponse(finalText)
-          if (cleanedTurn) this.sessionHistory.push({ role: 'assistant', content: cleanedTurn })
+          const cleanedTurn = cleanResponse(finalText)
+          if (cleanedTurn) this.session.push({ role: 'assistant', content: cleanedTurn })
           break
         }
 
-        this.sessionHistory.push({ role: 'assistant', content: response.content })
+        this.session.push({ role: 'assistant', content: response.content })
 
         const toolResults: ContentBlock[] = []
         for (const block of toolUseBlocks) {
@@ -239,8 +236,8 @@ export class AgentLoop {
           })
         }
 
-        this.sessionHistory.push({ role: 'user', content: toolResults })
-        messages = this.buildMessages()
+        this.session.push({ role: 'user', content: toolResults })
+        messages = this.session.buildMessages()
       }
 
       if (turns >= this.config.agent.max_turns_per_cycle && !finalText) {
@@ -250,7 +247,7 @@ export class AgentLoop {
       // GLM 多轮工具后,最后一轮常只剩 [WAKE:...] 指令——finalText 被覆盖成纯指令,
       // 清洗后为空,中间轮生成的正文整段蒸发,用户视角"已读不回"(06-10 10:54 实锤:
       // 687 token 查了一堆去处,回复却是空)。回退:正文取最近的实质文本,指令保留给 postProcess
-      if (!this.cleanResponse(finalText) && lastSubstantive) {
+      if (!cleanResponse(finalText) && lastSubstantive) {
         const directives = finalText.match(/\[(?:WAKE|MOOD):[^\]\n]*\]?/g)?.join(' ') ?? ''
         console.warn('[agent-loop] 末轮只有指令无正文,回退到上一轮实质内容')
         finalText = directives ? `${lastSubstantive}\n${directives}` : lastSubstantive
@@ -269,13 +266,13 @@ export class AgentLoop {
         duration: Date.now() - start,
       })
 
-      this.lastActivity = Date.now()
+      this.session.markActivity()
       this.lastSuccessAt = new Date()
       this.consecutiveFailures = 0
-      this.persistSession()
+      this.session.persist()
 
       return {
-        response: this.cleanResponse(finalText),
+        response: cleanResponse(finalText),
         tool_calls_made: toolCallCount,
         tokens_used: { input: totalInput, output: totalOutput, cache_read: totalCacheRead },
         duration_ms: Date.now() - start,
@@ -298,22 +295,17 @@ export class AgentLoop {
     }
   }
 
-  private buildMessages(): ChatMessage[] {
-    this.sessionHistory = trimHistory(this.sessionHistory, 40)
-    return [...this.sessionHistory]
-  }
-
   private async postProcess(response: string, trigger: WakeTrigger): Promise<void> {
     // 顺序要紧：先在原文上抽指令（下面 extractMood/extractWakeDirective 依赖原文），
     // 再用清洗后的文本写记忆/抽实体——否则 [WAKE]/[MOOD] 会污染长期记忆和实体表
-    const streamEntry = this.extractStreamEntry(response)
+    const streamEntry = extractStreamEntry(response)
     if (streamEntry) {
       this.assembler.streamLayer.append(streamEntry.content, streamEntry.activity)
     }
 
     // style-guard 只挡发给用户的消息,自主 cycle 的内心独白没人挡,
     // markdown 粗体曾直接进了长期记忆(9 条)——入库前统一清一遍
-    const rawCleaned = this.cleanResponse(response)
+    const rawCleaned = cleanResponse(response)
     const cleaned = rawCleaned ? guardStyle(rawCleaned).cleaned : ''
     if (cleaned) {
       this.store?.insertEpisode({
@@ -324,19 +316,19 @@ export class AgentLoop {
         content: cleaned.slice(0, 500),
         summary: null,
         embedding: null,
-        session_id: this.sessionId,
+        session_id: this.session.sessionId,
         topic_tags: null,
         entities: jsonOrNull(extractEntities(cleaned)),
       })
     }
 
     // agent 在回复里写了 [MOOD:情绪:原因] 就更新心情
-    const mood = this.extractMood(response)
+    const mood = extractMood(response)
     if (mood) {
       updateMood(this.config.paths.data, mood.mood, mood.reason)
     }
 
-    const wakeDirective = this.extractWakeDirective(response)
+    const wakeDirective = extractWakeDirective(response)
     if (wakeDirective && this.scheduler) {
       this.scheduler.scheduleNext(wakeDirective)
       this.assembler.setLastWake(new Date(), wakeDirective.activity_type)
@@ -354,42 +346,7 @@ export class AgentLoop {
       await this.consolidation.consolidate()
     }
 
-    await this.maybeCompactSession()
-  }
-
-  // session autocompact:历史超过 30 条就把头部压成一条"前情提要",原位替换。
-  // 这样长会话丢的是细节不是事实,trimHistory 的硬裁剪降级为压缩失败时的兜底。
-  // 跑在 postProcess(异步)里,期间下一个 cycle 可能已开动,所以替换前做代次校验。
-  private async maybeCompactSession(): Promise<void> {
-    if (this.compacting || !this.consolidation) return
-    if (this.sessionHistory.length <= 30) return
-    this.compacting = true
-    try {
-      const sessionId = this.sessionId
-      // 头部至少 16 条,延伸到安全切点,保证替换后剩余历史以纯文本 user 开头
-      let headEnd = 16
-      while (headEnd < this.sessionHistory.length - 8 && !isSafeStart(this.sessionHistory[headEnd]!)) {
-        headEnd++
-      }
-      if (headEnd >= this.sessionHistory.length - 4) return
-      const head = this.sessionHistory.slice(0, headEnd)
-
-      const summary = await this.consolidation.compactHistory(head)
-      if (!summary) return
-
-      // 代次校验:压缩期间 session 被轮转/清空/裁剪过就放弃(宁可不压,不能错接)
-      if (this.sessionId !== sessionId) return
-      if (this.sessionHistory.length < headEnd || this.sessionHistory[0] !== head[0]) return
-
-      this.sessionHistory.splice(0, headEnd, {
-        role: 'user',
-        content: `[前情提要,你们之前聊的浓缩] ${summary}`,
-      })
-      console.log(`[agent-loop] 会话压缩: ${headEnd} 条 → 1 条前情提要`)
-      this.persistSession()
-    } finally {
-      this.compacting = false
-    }
+    await this.session.maybeCompact(this.consolidation)
   }
 
   private async backfillEmbeddings(): Promise<void> {
@@ -401,62 +358,9 @@ export class AgentLoop {
     }
   }
 
-  private extractMood(text: string): { mood: string; reason: string } | null {
-    const m = text.match(/\[MOOD:([^:\]\n]+):?([^\]\n]*)\]?/)
-    if (!m) return null
-    return { mood: m[1]!.trim(), reason: (m[2] ?? '').trim() }
-  }
-
-  // 距上次活动超过超时时间,把当前会话历史归档(后台生成摘要),清空开新会话
-  private maybeRotateSession(): void {
-    const timeoutMs = this.config.agent.session_timeout_minutes * 60 * 1000
-    if (this.sessionHistory.length === 0) return
-    if (Date.now() - this.lastActivity < timeoutMs) return
-
-    const oldSession = this.sessionId
-    const history = this.sessionHistory
-    this.sessionHistory = []
-    this.sessionId = `s_${Date.now().toString(36)}`
-    this.removeSessionFile()
-
-    // 会话摘要交给整合机制,这里只记一条归档标记
-    if (this.consolidation) {
-      this.consolidation.summarizeSession(oldSession, history).catch(() => { /* 摘要失败不阻塞 */ })
-    }
-  }
-
-  // 会话落盘:重启(部署/崩溃)不再丢短期对话记忆。autocompact 把规模压在 ~40 条内,写整个文件没负担
-  private persistSession(): void {
-    try {
-      writeFileSync(this.sessionFile, JSON.stringify({
-        sessionId: this.sessionId,
-        lastActivity: this.lastActivity,
-        history: this.sessionHistory,
-      }))
-    } catch { /* 落盘失败不影响对话 */ }
-  }
-
-  private removeSessionFile(): void {
-    try { unlinkSync(this.sessionFile) } catch { /* 不存在就算了 */ }
-  }
-
-  // 启动时恢复落盘会话(mu.ts 调,在第一个 cycle 之前)。
-  // 恢复要过两道闸:sanitize 防孤儿工具块、trimHistory 保证切点;
-  // lastActivity 一并恢复——超时的旧会话会被下个 cycle 的 maybeRotateSession 正常归档(摘要不丢)
+  // 启动时恢复落盘会话(mu.ts 调,在第一个 cycle 之前)
   restoreSession(): void {
-    if (!existsSync(this.sessionFile)) return
-    try {
-      const saved = JSON.parse(readFileSync(this.sessionFile, 'utf-8')) as {
-        sessionId?: string; lastActivity?: number; history?: ChatMessage[]
-      }
-      if (!Array.isArray(saved.history) || saved.history.length === 0) return
-      const { messages, dropped } = sanitizeMessages(saved.history)
-      if (dropped.length > 0) console.warn(`[agent-loop] 恢复会话时剔除非法块: ${dropped.join('; ')}`)
-      this.sessionHistory = trimHistory(messages, 40)
-      if (typeof saved.sessionId === 'string' && saved.sessionId) this.sessionId = saved.sessionId
-      if (typeof saved.lastActivity === 'number') this.lastActivity = saved.lastActivity
-      console.log(`[agent-loop] 恢复落盘会话: ${this.sessionHistory.length} 条 (${this.sessionId})`)
-    } catch { /* 文件坏了当全新会话 */ }
+    this.session.restore()
   }
 
   // 运维告警(mu.ts 注入,直接 POST QQ bridge,不过 LLM、不占 proactive 配额)。
@@ -473,44 +377,8 @@ export class AgentLoop {
     this.opsAlert = fn
   }
 
-  private extractStreamEntry(text: string): { content: string; activity?: string } | null {
-    if (!text) return null
-    // 长度判断必须在清洗之后:纯 [WAKE][MOOD] 指令的回复清洗完是空的,
-    // 旧逻辑在清洗前判长度,导致意识流里出现空白条目
-    const clean = text
-      .replace(/\[WAKE:[^\]\n]*\]?/g, '')
-      .replace(/\[MOOD:[^\]\n]*\]?/g, '')
-      .replace(/\n+/g, ' ')
-      .trim()
-    if (clean.length < 5) return null
-    return { content: truncateAtBoundary(clean, 200), activity: 'chat' }
-  }
-
-  private extractWakeDirective(text: string): { seconds: number; reason: string; activity_type: string } | null {
-    // reason 段必须挡住 ]:她写 [WAKE:300:催饭/active](用/合并漏了一段)时,
-    // 旧正则 [^:]* 会贪婪吞过 ] 一路吃到下一个 [MOOD 的冒号,reason 变成"催饭/active] [MOOD"。
-    // activity 段改可选——缺了按 rest 算,别让整条指令作废
-    const match = text.match(/\[WAKE:(\d+):([^:\]\n]*)(?::([^\]\n]*))?\]?/)
-    if (!match) return null
-    return {
-      seconds: parseInt(match[1]!),
-      reason: match[2]!.trim(),
-      activity_type: (match[3] ?? '').trim() || 'rest',
-    }
-  }
-
-  private cleanResponse(text: string): string {
-    // 把内部指令标记从给用户看的文本里抹掉
-    return text
-      .replace(/\[WAKE:[^\]\n]*\]?/g, '')
-      .replace(/\[MOOD:[^\]\n]*\]?/g, '')
-      .trim()
-  }
-
   clearSession(): void {
-    this.sessionHistory = []
-    this.sessionId = `s_${Date.now().toString(36)}`
-    this.removeSessionFile()
+    this.session.clear()
   }
 
   // mu.ts 注入:把 message_send 的文本(可带图片)路由到对应网关
@@ -526,38 +394,6 @@ export class AgentLoop {
   get health(): { lastSuccessAt: Date | null; consecutiveFailures: number } {
     return { lastSuccessAt: this.lastSuccessAt, consecutiveFailures: this.consecutiveFailures }
   }
-}
-
-// 裁剪会话历史,切点必须落在"纯文本 user 消息"上。
-// 硬 slice(-n) 会把 assistant 的 tool_use 和后面的 tool_result 切开,留下孤儿
-// tool_result —— GLM 对此 400(2013 tool id not found),且坏历史驻留后每次请求都失败(06-09 事故根因)。
-export function trimHistory(history: ChatMessage[], max: number): ChatMessage[] {
-  if (history.length <= max) return history
-  let start = history.length - max
-  while (start < history.length && !isSafeStart(history[start]!)) start++
-  if (start >= history.length) {
-    // 窗口内没有安全切点(超长工具链):向前扩窗到最近的安全点,宁可多带几条也不发坏历史
-    start = history.length - max
-    while (start > 0 && !isSafeStart(history[start]!)) start--
-  }
-  return history.slice(start)
-}
-
-function isSafeStart(m: ChatMessage): boolean {
-  if (m.role !== 'user') return false
-  if (typeof m.content === 'string') return true
-  return !m.content.some(b => b.type === 'tool_result')
-}
-
-// 意识流截断:超长时尽量在标点/空格处断,别把一句话腰斩("也可能已"这种)
-function truncateAtBoundary(text: string, max: number): string {
-  if (text.length <= max) return text
-  const slice = text.slice(0, max)
-  const boundary = Math.max(
-    slice.lastIndexOf(' '),
-    ...['。', '!', '?', '!', '?', ',', ',', ' ', '…'].map(p => slice.lastIndexOf(p)),
-  )
-  return boundary > max * 0.6 ? slice.slice(0, boundary + 1).trim() : slice
 }
 
 function jsonOrNull(arr: string[]): string | null {

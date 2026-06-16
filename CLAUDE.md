@@ -12,13 +12,14 @@ pnpm dev              # 同上,带 watch 热重启
 pnpm typecheck        # tsc --noEmit(提交前必跑)
 pnpm build            # tsup 打 dist —— 只用于类型验证/产物,生产不用 dist
 pnpm mu <cmd>         # 另开终端的管理命令:status / memory <词> / wake / logs / config
-tsx src/test-trim.ts  # trimHistory 对照验证(改会话裁剪逻辑后必跑)
-ssh xpark 'bash /home/xpark/mu/scripts/persona-regression.sh'          # 召回回归(零成本,12查询基线 12/12)
+pnpm test             # node:test 单测(co-located *.test.ts,提交前必跑;pretest 挂 typecheck)
+ssh xpark 'bash /home/xpark/mu/scripts/persona-regression.sh'          # 召回回归(零成本,17查询基线 17/17)
 ssh xpark 'bash /home/xpark/mu/scripts/persona-regression.sh --full'   # +5 个 LLM 场景(烧 token,自动备份/还原/清痕)
 ```
 
 - **运行用 tsx 直跑 `src/`,不是 `dist/`**。改了 TS 不用 build,重启进程即可。
-- **没有测试框架**。`src/test-*.ts` 是手动对照脚本,`scripts/persona-regression.sh` 是部署后回归基线(大改 soul/记忆系统后必跑,对照上次结果)。
+- **测试**:`pnpm test`(node:test,零依赖,co-located `*.test.ts`,400+ 个 characterization test 锁住高危行为)。`src/test-{chat,multi,search,webhook}.ts` 是需真实 LLM/网络的手动 L2 冒烟脚本。`scripts/persona-regression.sh` 是部署后回归基线(大改 soul/记忆系统后必跑,对照上次结果)。三层:单测(逻辑)→ 冒烟(接线)→ 人格回归(她还是她)。
+- **架构全景见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**(进程/核心循环/七层记忆/自愈"别拆"清单)。
 - Node 22+,ESM(`"type": "module"`),import 路径带 `.js` 后缀(NodeNext)。
 - 仓库:`github.com/Xuuuuu04/mu-agent`(private)。remote 走 HTTPS+gh 凭据(本机代理拦 SSH 22)。
 
@@ -50,7 +51,7 @@ ssh xpark 'bash /home/xpark/mu/scripts/persona-regression.sh --full'   # +5 个 
 5. **后处理**(异步):抽指令 → 写意识流 → 入库(过 guardStyle,markdown 不进记忆)→ 补 embedding → consolidation → **autocompact**。
 
 ### 自愈机制(2026-06-09 死亡螺旋事故后建立,别拆)
-- `trimHistory`(导出纯函数,test-trim.ts 验证):裁剪切点对齐纯文本 user 消息,绝不产生孤儿 tool_result(GLM 对此 400 且坏历史会永久驻留)。
+- `trimHistory`(`core/history.ts` 导出纯函数,history.test.ts 验证):裁剪切点对齐纯文本 user 消息,绝不产生孤儿 tool_result(GLM 对此 400 且坏历史会永久驻留)。
 - `lastActivity` 只在 cycle **成功**后更新——失败不刷新,保证 session 超时轮转能清坏历史。
 - 连续 3 次 cycle 失败自动 clearSession + 意识流留痕。
 - cron 兜底两种情况:有 pending wake 超 10 分钟没醒;**无 pending wake 且超 max_wake_seconds 无成功 cycle**(唤醒链断裂)。当前参数(6/10 活跃度拉满):min 120s / max 3600s / cron 900s / night_min 1800s。

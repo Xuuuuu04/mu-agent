@@ -71,7 +71,7 @@ export class MemoryConsolidation {
         .map(b => b.text)
         .join('')
 
-      const parsed = this.parseConsolidationResult(text)
+      const parsed = parseConsolidationResult(text)
 
       if (parsed.facts.length > 0) {
         this.appendFacts(parsed.facts)
@@ -194,44 +194,6 @@ export class MemoryConsolidation {
     }
   }
 
-  private parseConsolidationResult(text: string): {
-    facts: string[]
-    summary: string | null
-    mood: string | null
-  } {
-    const facts: string[] = []
-    let summary: string | null = null
-    let mood: string | null = null
-    let currentSection = ''
-
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim()
-      if (trimmed.startsWith('[事实]') || trimmed.startsWith('事实:')) {
-        currentSection = 'facts'
-      } else if (trimmed.startsWith('[摘要]') || trimmed.startsWith('摘要:')) {
-        currentSection = 'summary'
-        summary = trimmed.replace(/^\[摘要\]\s*|^摘要:\s*/, '')
-      } else if (trimmed.startsWith('[情绪]') || trimmed.startsWith('情绪:')) {
-        currentSection = 'mood'
-        mood = trimmed.replace(/^\[情绪\]\s*|^情绪:\s*/, '')
-      } else if (trimmed.startsWith('- ') && currentSection === 'facts') {
-        const fact = trimmed.slice(2).trim()
-        // "无/没有新事实"这种解释性输出不是事实,别存(曾出现"[consolidation] 无(用户仅回复了…)")
-        if (fact && !/^无([(（]|$)|^没有/.test(fact)) facts.push(fact)
-      } else if (currentSection === 'summary' && trimmed && !summary) {
-        summary = trimmed
-      } else if (currentSection === 'mood' && trimmed && !mood) {
-        mood = trimmed
-      }
-    }
-
-    if (!summary && text.length > 20) {
-      summary = text.slice(0, 200)
-    }
-
-    return { facts, summary, mood }
-  }
-
   private appendFacts(facts: string[]): void {
     const path = join(this.dataDir, 'memory', 'user-facts.md')
     const existing = existsSync(path) ? readFileSync(path, 'utf-8') : ''
@@ -240,6 +202,45 @@ export class MemoryConsolidation {
     const newEntries = facts.map(f => `[${date}] [consolidation] ${absolutizeTime(f)}`).join('\n')
     writeFileSync(path, existing + '\n' + newEntries + '\n', 'utf-8')
   }
+}
+
+// 解析 consolidation LLM 的输出:分 [事实]/[摘要]/[情绪] 段。纯函数,可单测。
+// "无/没有新事实"这种解释性输出不当事实存(曾污染 user-facts)。
+export function parseConsolidationResult(text: string): {
+  facts: string[]
+  summary: string | null
+  mood: string | null
+} {
+  const facts: string[] = []
+  let summary: string | null = null
+  let mood: string | null = null
+  let currentSection = ''
+
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('[事实]') || trimmed.startsWith('事实:')) {
+      currentSection = 'facts'
+    } else if (trimmed.startsWith('[摘要]') || trimmed.startsWith('摘要:')) {
+      currentSection = 'summary'
+      summary = trimmed.replace(/^\[摘要\]\s*|^摘要:\s*/, '')
+    } else if (trimmed.startsWith('[情绪]') || trimmed.startsWith('情绪:')) {
+      currentSection = 'mood'
+      mood = trimmed.replace(/^\[情绪\]\s*|^情绪:\s*/, '')
+    } else if (trimmed.startsWith('- ') && currentSection === 'facts') {
+      const fact = trimmed.slice(2).trim()
+      if (fact && !/^无([(（]|$)|^没有/.test(fact)) facts.push(fact)
+    } else if (currentSection === 'summary' && trimmed && !summary) {
+      summary = trimmed
+    } else if (currentSection === 'mood' && trimmed && !mood) {
+      mood = trimmed
+    }
+  }
+
+  if (!summary && text.length > 20) {
+    summary = text.slice(0, 200)
+  }
+
+  return { facts, summary, mood }
 }
 
 const CONSOLIDATION_PROMPT = `你是沐的记忆整合助手,帮她从对话记录里提取值得长期记住的新信息。
