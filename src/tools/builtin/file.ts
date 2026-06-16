@@ -71,8 +71,12 @@ export const fileListTool: ToolDef = {
   },
 }
 
-function resolveSafe(base: string, relative: string): string | null {
-  const resolved = join(base, relative)
+export function resolveSafe(base: string, relative: string): string | null {
+  // 剥开头的 ./ 和 /,再剥一段多余的 data/ 前缀:base 本就是 data 目录,
+  // 她常误写 data/x 落成 dataDir/data/x 双重嵌套(CLAUDE.md 记录的坑)。
+  // 只剥开头一段、且要求后面带 /(data.txt 这种文件名不动)
+  const rel = relative.replace(/^\.?\/+/, '').replace(/^data\//, '')
+  const resolved = join(base, rel)
   // startsWith(base) 缺分隔符边界，同前缀兄弟目录(data-backup)能逃出沙箱；要求严格落在 base 下
   if (resolved !== base && !resolved.startsWith(base + sep)) return null
   return resolved

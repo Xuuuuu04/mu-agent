@@ -3,7 +3,23 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { fileReadTool, fileWriteTool, fileListTool } from './file.js'
+import { fileReadTool, fileWriteTool, fileListTool, resolveSafe } from './file.js'
+
+// ── resolveSafe(纯函数,导出)──
+test('resolveSafe: 剥开头多余的 data/ 前缀', () => {
+  assert.equal(resolveSafe('/d', 'data/x.txt'), join('/d', 'x.txt'))
+  assert.equal(resolveSafe('/d', './data/x.txt'), join('/d', 'x.txt'))
+  assert.equal(resolveSafe('/d', '/data/x.txt'), join('/d', 'x.txt'))
+})
+test('resolveSafe: 普通路径和 data.txt 文件名不受影响', () => {
+  assert.equal(resolveSafe('/d', 'notes/a.md'), join('/d', 'notes/a.md'))
+  assert.equal(resolveSafe('/d', 'data.txt'), join('/d', 'data.txt'))
+})
+test('resolveSafe: 逃逸仍被挡(剥 data/ 后 ../ 也拦)', () => {
+  assert.equal(resolveSafe('/d', '../etc/passwd'), null)
+  assert.equal(resolveSafe('/d', 'data/../../etc'), null)
+  assert.equal(resolveSafe('/d', '../d-backup/x'), null)   // 同前缀兄弟目录
+})
 import type { ToolContext } from '../../core/types.js'
 
 // 临时 dataDir + 最小 ctx。只锁 file_read/write/list 真实行为。
@@ -90,12 +106,16 @@ test('file_write:目录逃逸 → 路径不允许(不写盘)', () => withDataDir
   assert.equal(r.error, '路径不允许')
 }))
 
-test('file_write:给 data/ 前缀会双重嵌套(CLAUDE.md 记录的真实坑)', () => withDataDir(async (dataDir, ctx) => {
-  // resolveSafe 不剥 data/ 前缀:写到 <dataDir>/data/foo.txt 而不是 <dataDir>/foo.txt
+test('file_write:剥掉多余的 data/ 前缀,不再双重嵌套(修了 CLAUDE.md 记录的坑)', () => withDataDir(async (dataDir, ctx) => {
   const r = await fileWriteTool.execute({ path: 'data/foo.txt', content: 'hi' }, ctx)
   assert.equal(r.success, true)
-  assert.ok(existsSync(join(dataDir, 'data', 'foo.txt')), '落在 data/ 子目录里(嵌套)')
-  assert.equal(existsSync(join(dataDir, 'foo.txt')), false, '没有写到根')
+  assert.ok(existsSync(join(dataDir, 'foo.txt')), '落在根,不再嵌套进 data/')
+  assert.equal(existsSync(join(dataDir, 'data', 'foo.txt')), false, '没有 data/data 双重嵌套')
+}))
+
+test('file_write:data.txt 这种文件名不被误剥(只剥 data/ 带斜杠的)', () => withDataDir(async (dataDir, ctx) => {
+  await fileWriteTool.execute({ path: 'data.txt', content: 'x' }, ctx)
+  assert.ok(existsSync(join(dataDir, 'data.txt')), 'data.txt 文件名保留')
 }))
 
 test('file_write:前导斜杠路径不当绝对路径,被 join 拼回 dataDir 下', () => withDataDir(async (dataDir, ctx) => {
