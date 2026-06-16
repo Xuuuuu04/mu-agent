@@ -197,11 +197,36 @@ export class MemoryConsolidation {
   private appendFacts(facts: string[]): void {
     const path = join(this.dataDir, 'memory', 'user-facts.md')
     const existing = existsSync(path) ? readFileSync(path, 'utf-8') : ''
+    // 先固化相对时间(长期事实里不留"明天/昨天"),再做确定性去重兜底
+    const absolutized = facts.map(f => absolutizeTime(f))
+    const fresh = dedupeFacts(absolutized, existing)
+    if (fresh.length === 0) return
     const date = new Date().toISOString().slice(0, 10)
-    // 固化相对时间,长期事实里不留"明天/昨天"
-    const newEntries = facts.map(f => `[${date}] [consolidation] ${absolutizeTime(f)}`).join('\n')
+    const newEntries = fresh.map(f => `[${date}] [consolidation] ${f}`).join('\n')
     writeFileSync(path, existing + '\n' + newEntries + '\n', 'utf-8')
   }
+}
+
+// 确定性去重兜底:LLM 被注入已有事实做对照,但仍会重复提取(措辞略变就认不出,
+// 清理前"6/2 答辩"重复过 9 次)。写库前再过一道——归一化后已被某条现有事实
+// 完整包含的新事实跳过。保守:只跳完全冗余,不丢更新/超集(新事实更长则保留)。
+export function dedupeFacts(newFacts: string[], existingText: string): string[] {
+  const norm = (s: string) => s
+    .replace(/^\[[^\]]*\]\s*\[[^\]]*\]\s*/g, '')          // 去 [日期] [tag] 前缀
+    .replace(/[\s，。、,.\-—:：;；!！?？"'""'']/g, '')
+    .toLowerCase()
+  const existing = existingText.split('\n').map(norm).filter(l => l.length > 4)
+  const seen = new Set(existing)
+  const out: string[] = []
+  for (const f of newFacts) {
+    const nf = norm(f)
+    if (nf.length <= 4) { out.push(f); continue }           // 太短不敢判,照常存
+    if (seen.has(nf)) continue                               // 完全相同
+    if (existing.some(e => e.includes(nf))) continue         // 已被某条现有事实完整包含
+    out.push(f)
+    seen.add(nf)
+  }
+  return out
 }
 
 // 解析 consolidation LLM 的输出:分 [事实]/[摘要]/[情绪] 段。纯函数,可单测。

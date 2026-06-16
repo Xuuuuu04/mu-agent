@@ -44,6 +44,15 @@ def is_delivered(send_result):
     return bool((send_result or {}).get("context_token"))
 
 
+def build_c2c_body(text, msg_seq, reply_to=None, msg_type=0, max_len=4000):
+    """QQ C2C 文本消息体。content 截到 max_len(QQ 拒收过长会整条失败);
+    带 reply_to(收到的 msg_id)= 被动回复(5 分钟内免费),不带 = 主动消息。"""
+    body = {"content": text[:max_len], "msg_type": msg_type, "msg_seq": msg_seq}
+    if reply_to:
+        body["msg_id"] = reply_to
+    return body
+
+
 class Dedup:
     """收消息去重:QQ 会重推。FIFO 满 cap 只淘汰最老一条——整体 clear 会让重推的旧
     msg_id 被当新消息重复处理。"""

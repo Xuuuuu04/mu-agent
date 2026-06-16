@@ -6,8 +6,25 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from bridge_pure import (  # noqa: E402
     split_reply_chunks, is_authorized, extract_image_urls,
-    ask_payload, is_delivered, Dedup,
+    ask_payload, is_delivered, build_c2c_body, Dedup,
 )
+
+
+class TestBuildC2CBody(unittest.TestCase):
+    def test_basic(self):
+        b = build_c2c_body("hi", 3)
+        self.assertEqual(b, {"content": "hi", "msg_type": 0, "msg_seq": 3})
+
+    def test_reply_to_adds_msg_id(self):
+        b = build_c2c_body("hi", 1, reply_to="m1")
+        self.assertEqual(b["msg_id"], "m1")
+
+    def test_no_reply_to_no_msg_id(self):
+        self.assertNotIn("msg_id", build_c2c_body("hi", 1))
+
+    def test_truncates_to_max_len(self):
+        b = build_c2c_body("x" * 5000, 1, max_len=4000)
+        self.assertEqual(len(b["content"]), 4000)
 
 
 class TestSplitReplyChunks(unittest.TestCase):

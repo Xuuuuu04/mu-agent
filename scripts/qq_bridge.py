@@ -25,7 +25,9 @@ import uuid
 import urllib.request
 from datetime import datetime as _dt
 
-from bridge_pure import split_reply_chunks, is_authorized, extract_image_urls, ask_payload, Dedup
+from bridge_pure import (
+    split_reply_chunks, is_authorized, extract_image_urls, ask_payload, build_c2c_body, Dedup,
+)
 
 
 def print(*args, **kw):  # noqa: A001 —— 全文件日志统一带时间戳(06-10 排查回复蒸发时无时间戳吃过亏)
@@ -127,9 +129,7 @@ def _msg_seq() -> int:
 async def _send_c2c(openid: str, text: str, reply_to: "str | None" = None, seq: "int | None" = None) -> dict:
     """发私信。reply_to(收到的 msg_id)带上 = 被动回复(5 分钟内免费);不带 = 主动消息。
     seq: 同一 msg_id 被动回复多条时用 1-5 区分(QQ 上限 5 条)。"""
-    body = {"content": text[:MAX_LEN], "msg_type": 0, "msg_seq": seq if seq else _msg_seq()}
-    if reply_to:
-        body["msg_id"] = reply_to
+    body = build_c2c_body(text, seq if seq else _msg_seq(), reply_to=reply_to, max_len=MAX_LEN)
     return await _api("POST", f"/v2/users/{openid}/messages", body)
 
 

@@ -1,6 +1,38 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseConsolidationResult } from './consolidation.js'
+import { parseConsolidationResult, dedupeFacts } from './consolidation.js'
+
+// ── dedupeFacts 确定性去重兜底 ──
+test('dedupeFacts: 跳过与现有完全相同的事实', () => {
+  const existing = '[2026-06-01] [consolidation] 哥哥6月2日答辩\n'
+  assert.deepEqual(dedupeFacts(['哥哥6月2日答辩'], existing), [])
+})
+
+test('dedupeFacts: 新事实是现有事实的连续子串 → 冗余跳过', () => {
+  const existing = '[2026-06-01] [consolidation] 哥哥6月2日答辩很紧张\n'
+  assert.deepEqual(dedupeFacts(['哥哥6月2日答辩'], existing), [])
+})
+
+test('dedupeFacts: 保守 — 中间插了新信息(非连续)不误删', () => {
+  // "在东北大学"打断连续性 → 不判重复,保留(宁可不删也不丢真事实)
+  const existing = '[2026-06-01] [consolidation] 哥哥6月2日在东北大学答辩\n'
+  assert.deepEqual(dedupeFacts(['哥哥6月2日答辩'], existing), ['哥哥6月2日答辩'])
+})
+
+test('dedupeFacts: 保留真正的新事实', () => {
+  const existing = '[2026-06-01] [consolidation] 哥哥6月2日答辩\n'
+  assert.deepEqual(dedupeFacts(['哥哥喜欢喝美式'], existing), ['哥哥喜欢喝美式'])
+})
+
+test('dedupeFacts: 超集(更完整的更新)保留', () => {
+  const existing = '[2026-06-01] [consolidation] 哥哥答辩\n'
+  // 新事实更长更具体,不算冗余,保留
+  assert.deepEqual(dedupeFacts(['哥哥6月2日在东北大学答辩'], existing), ['哥哥6月2日在东北大学答辩'])
+})
+
+test('dedupeFacts: 同批内部也去重', () => {
+  assert.deepEqual(dedupeFacts(['哥哥喜欢咖啡', '哥哥喜欢咖啡'], ''), ['哥哥喜欢咖啡'])
+})
 
 // 锁住 consolidation LLM 输出的解析:分段 + "无"过滤(曾污染 user-facts)
 test('解析 [事实]/[摘要]/[情绪] 三段', () => {
