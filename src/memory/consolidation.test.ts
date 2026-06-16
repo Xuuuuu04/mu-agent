@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseConsolidationResult, dedupeFacts } from './consolidation.js'
+import { parseConsolidationResult, dedupeFacts, semanticDedupeFacts } from './consolidation.js'
+import { EmbeddingService } from './embedding.js'
 
 // ── dedupeFacts 确定性去重兜底 ──
 test('dedupeFacts: 跳过与现有完全相同的事实', () => {
@@ -71,4 +72,110 @@ test('空输入 → facts 空、summary null', () => {
   const r = parseConsolidationResult('')
   assert.deepEqual(r.facts, [])
   assert.equal(r.summary, null)
+})
+
+// ── semanticDedupeFacts(用 mock embedding 测纯逻辑) ──
+
+// 构造一个假 embedding service:按 vecMap 映射文本→向量,不走网络
+function mockEmbedding(vecMap: Record<string, number[]>): EmbeddingService {
+  return {
+    available: true,
+    embedBatch: async (texts: string[]) =>
+      texts.map(t => {
+        const key = Object.keys(vecMap).find(k => t.includes(k))
+        return key ? Float32Array.from(vecMap[key]!) : null
+      }),
+  } as unknown as EmbeddingService
+}
+
+test('semanticDedupeFacts: 高相似度事实被过滤', async () => {
+  const emb = mockEmbedding({
+    '哥哥喜欢咖啡': [1, 0, 0],
+    '哥哥爱喝咖啡': [0.99, 0.14, 0],     // cosine ≈ 0.99,语义重复
+    '哥哥去深圳出差': [0, 1, 0],           // 正交,完全不同
+  })
+  const result = await semanticDedupeFacts(
+    ['哥哥爱喝咖啡', '哥哥去深圳出差'],
+    ['[2026-06-01] [consolidation] 哥哥喜欢咖啡'],
+    emb,
+  )
+  assert.deepEqual(result, ['哥哥去深圳出差'])
+})
+
+test('semanticDedupeFacts: 低于阈值全保留', async () => {
+  const emb = mockEmbedding({
+    '哥哥喜欢咖啡': [1, 0, 0],
+    '哥哥去深圳出差': [0.5, 0.866, 0],   // cosine ≈ 0.5
+    '哥哥换了手机': [0, 1, 0],
+  })
+  const result = await semanticDedupeFacts(
+    ['哥哥去深圳出差', '哥哥换了手机'],
+    ['[2026-06-01] [consolidation] 哥哥喜欢咖啡'],
+    emb,
+  )
+  assert.deepEqual(result, ['哥哥去深圳出差', '哥哥换了手机'])
+})
+
+test('semanticDedupeFacts: embedding 全挂 → 降级全放行', async () => {
+  const emb = {
+    available: true,
+    embedBatch: async (texts: string[]) => texts.map(() => null),
+  } as unknown as EmbeddingService
+  const result = await semanticDedupeFacts(
+    ['哥哥爱喝咖啡'],
+    ['[2026-06-01] [consolidation] 哥哥喜欢咖啡'],
+    emb,
+  )
+  assert.deepEqual(result, ['哥哥爱喝咖啡'])
+})
+
+test('semanticDedupeFacts: 空 existing → 全保留', async () => {
+  const emb = mockEmbedding({})
+  const result = await semanticDedupeFacts(['新事实'], [], emb)
+  assert.deepEqual(result, ['新事实'])
+})
+
+test('semanticDedupeFacts: 空 newFacts → 空', async () => {
+  const emb = mockEmbedding({})
+  const result = await semanticDedupeFacts([], ['existing'], emb)
+  assert.deepEqual(result, [])
+})
+
+test('semanticDedupeFacts: 自定义阈值生效', async () => {
+  const emb = mockEmbedding({
+    '哥哥喜欢咖啡': [1, 0, 0],
+    '哥哥爱喝咖啡': [0.9, 0.436, 0],   // cosine ≈ 0.9
+  })
+  // 0.95 阈值 → 0.9 不够,保留
+  const kept = await semanticDedupeFacts(
+    ['哥哥爱喝咖啡'],
+    ['[2026-06-01] [consolidation] 哥哥喜欢咖啡'],
+    emb, 0.95,
+  )
+  assert.deepEqual(kept, ['哥哥爱喝咖啡'])
+  // 0.80 阈值 → 0.9 足够,过滤
+  const filtered = await semanticDedupeFacts(
+    ['哥哥爱喝咖啡'],
+    ['[2026-06-01] [consolidation] 哥哥喜欢咖啡'],
+    emb, 0.80,
+  )
+  assert.deepEqual(filtered, [])
+})
+
+test('semanticDedupeFacts: 部分 embedding 失败的条目保留(不误删)', async () => {
+  const emb = {
+    available: true,
+    embedBatch: async (texts: string[]) =>
+      texts.map((t, i) => {
+        if (t.includes('咖啡')) return Float32Array.from([1, 0, 0])
+        if (i === texts.length - 1) return null  // 最后一条新事实 embed 失败
+        return Float32Array.from([0, 1, 0])
+      }),
+  } as unknown as EmbeddingService
+  const result = await semanticDedupeFacts(
+    ['embed失败的事实'],
+    ['[2026-06-01] [consolidation] 哥哥喜欢咖啡'],
+    emb,
+  )
+  assert.deepEqual(result, ['embed失败的事实'])
 })

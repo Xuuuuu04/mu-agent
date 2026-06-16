@@ -4,17 +4,20 @@ import type { MemoryStore } from './store.js'
 import type { ModelRouter } from '../providers/router.js'
 import type { ChatMessage } from '../core/types.js'
 import { absolutizeTime } from './absolutize.js'
+import { EmbeddingService } from './embedding.js'
 
 export class MemoryConsolidation {
   private store: MemoryStore
   private router: ModelRouter
   private dataDir: string
+  private embedding: EmbeddingService | null
   private lastConsolidation: Date | null = null
 
-  constructor(store: MemoryStore, router: ModelRouter, dataDir: string) {
+  constructor(store: MemoryStore, router: ModelRouter, dataDir: string, embedding?: EmbeddingService | null) {
     this.store = store
     this.router = router
     this.dataDir = dataDir
+    this.embedding = embedding ?? null
   }
 
   shouldConsolidate(): boolean {
@@ -74,7 +77,7 @@ export class MemoryConsolidation {
       const parsed = parseConsolidationResult(text)
 
       if (parsed.facts.length > 0) {
-        this.appendFacts(parsed.facts)
+        await this.appendFacts(parsed.facts)
       }
 
       const today = new Date().toISOString().slice(0, 10)
@@ -194,17 +197,69 @@ export class MemoryConsolidation {
     }
   }
 
-  private appendFacts(facts: string[]): void {
+  private async appendFacts(facts: string[]): Promise<void> {
     const path = join(this.dataDir, 'memory', 'user-facts.md')
     const existing = existsSync(path) ? readFileSync(path, 'utf-8') : ''
-    // 先固化相对时间(长期事实里不留"明天/昨天"),再做确定性去重兜底
     const absolutized = facts.map(f => absolutizeTime(f))
-    const fresh = dedupeFacts(absolutized, existing)
+    // 两级去重:确定性子串匹配(零成本) → 语义 cosine(一次 batch HTTP)
+    let fresh = dedupeFacts(absolutized, existing)
+    if (fresh.length > 0 && this.embedding?.available) {
+      const existingLines = existing.split('\n').map(l => l.trim()).filter(l => l.length > 4)
+      fresh = await semanticDedupeFacts(fresh, existingLines, this.embedding)
+    }
     if (fresh.length === 0) return
     const date = new Date().toISOString().slice(0, 10)
     const newEntries = fresh.map(f => `[${date}] [consolidation] ${f}`).join('\n')
     writeFileSync(path, existing + '\n' + newEntries + '\n', 'utf-8')
   }
+}
+
+// 语义去重:确定性子串匹配之后的第二道关。用 embedding cosine 捕捉措辞不同但语义重复的事实。
+// 阈值 0.85:宁可漏删(保留疑似重复)也不误删(丢真新信息)。embedding 挂了全部放行(降级)
+const SEMANTIC_DEDUP_THRESHOLD = 0.85
+
+export async function semanticDedupeFacts(
+  newFacts: string[],
+  existingLines: string[],
+  embedding: EmbeddingService,
+  threshold = SEMANTIC_DEDUP_THRESHOLD,
+): Promise<string[]> {
+  if (newFacts.length === 0 || existingLines.length === 0) return newFacts
+
+  // 去掉 [日期] [tag] 前缀,只嵌入语义内容
+  const stripPrefix = (s: string) => s.replace(/^\[[^\]]*\]\s*(\[[^\]]*\]\s*)?/, '').trim()
+  const existingContents = existingLines.map(stripPrefix).filter(l => l.length > 4)
+  if (existingContents.length === 0) return newFacts
+
+  const allTexts = [...existingContents, ...newFacts]
+  const vecs = await embedding.embedBatch(allTexts)
+
+  // batch 全挂 → 降级,全部放行
+  if (vecs.every(v => v === null)) return newFacts
+
+  const existingVecs = vecs.slice(0, existingContents.length)
+  const newVecs = vecs.slice(existingContents.length)
+
+  const result: string[] = []
+  for (let i = 0; i < newFacts.length; i++) {
+    const nv = newVecs[i]
+    if (!nv) { result.push(newFacts[i]!); continue }
+
+    let maxSim = 0
+    for (let j = 0; j < existingContents.length; j++) {
+      const ev = existingVecs[j]
+      if (!ev) continue
+      const sim = EmbeddingService.cosine(nv, ev)
+      if (sim > maxSim) maxSim = sim
+    }
+
+    if (maxSim < threshold) {
+      result.push(newFacts[i]!)
+    } else {
+      console.log(`[consolidation] 语义去重: "${newFacts[i]!.slice(0, 30)}" ≈ 已有 (sim=${maxSim.toFixed(3)})`)
+    }
+  }
+  return result
 }
 
 // 确定性去重兜底:LLM 被注入已有事实做对照,但仍会重复提取(措辞略变就认不出,

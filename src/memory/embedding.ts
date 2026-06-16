@@ -15,7 +15,6 @@ export class EmbeddingService {
     if (!this.config) return null
     const input = text.slice(0, 6000)
     try {
-      // base_url 末尾可能带或不带 /v1,统一拼 /embeddings
       const base = this.config.base_url.replace(/\/$/, '')
       const url = base.endsWith('/embeddings') ? base : `${base}/embeddings`
       const resp = await fetch(url, {
@@ -38,6 +37,41 @@ export class EmbeddingService {
     } catch (err) {
       console.error(`[embedding] ${(err as Error).message}`)
       return null
+    }
+  }
+
+  // 批量嵌入:一次 HTTP 请求编码多条文本(OpenAI 格式 input 接受 string[])。
+  // 语义去重用——88 条现有事实 + 几条新候选,一个请求搞定,不用逐条调 embed()
+  async embedBatch(texts: string[]): Promise<(Float32Array | null)[]> {
+    if (!this.config || texts.length === 0) return texts.map(() => null)
+    try {
+      const base = this.config.base_url.replace(/\/$/, '')
+      const url = base.endsWith('/embeddings') ? base : `${base}/embeddings`
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.api_key}`,
+        },
+        body: JSON.stringify({ model: this.config.model, input: texts.map(t => t.slice(0, 6000)) }),
+        signal: AbortSignal.timeout(30_000),
+      })
+      if (!resp.ok) {
+        console.error(`[embedding] batch HTTP ${resp.status}`)
+        return texts.map(() => null)
+      }
+      const data = await resp.json() as { data?: Array<{ embedding?: number[]; index: number }> }
+      if (!data.data) return texts.map(() => null)
+      const result: (Float32Array | null)[] = texts.map(() => null)
+      for (const item of data.data) {
+        if (item.embedding && item.index != null && item.index < texts.length) {
+          result[item.index] = Float32Array.from(item.embedding)
+        }
+      }
+      return result
+    } catch (err) {
+      console.error(`[embedding] batch: ${(err as Error).message}`)
+      return texts.map(() => null)
     }
   }
 

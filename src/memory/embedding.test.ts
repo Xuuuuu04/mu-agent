@@ -96,3 +96,17 @@ test('cosine: 零向量 → 0(除零保护)', () => {
   const b = Float32Array.from([1, 2, 3])
   assert.equal(EmbeddingService.cosine(a, b), 0)
 })
+
+// ---- embedBatch ----
+
+test('embedBatch: 无 config → 全 null', async () => {
+  const s = new EmbeddingService()
+  const r = await s.embedBatch(['a', 'b'])
+  assert.deepEqual(r, [null, null])
+})
+
+test('embedBatch: 空数组 → 空数组', async () => {
+  const s = new EmbeddingService(cfg())
+  const r = await s.embedBatch([])
+  assert.deepEqual(r, [])
+})

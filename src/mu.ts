@@ -85,7 +85,7 @@ async function main() {
   const consolidationRouter = config.model.auxiliary?.consolidation
     ? ModelRouter.forProvider(config.model.auxiliary.consolidation)
     : router
-  const consolidation = new MemoryConsolidation(store, consolidationRouter, config.paths.data)
+  const consolidation = new MemoryConsolidation(store, consolidationRouter, config.paths.data, embedding)
 
   const loop = new AgentLoop({ config, assembler, router, tools, store, scheduler, consolidation, embedding })
   // cron 兜底据此判断唤醒链断裂(太久没有成功 cycle 就强制唤醒)
