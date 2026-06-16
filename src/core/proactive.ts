@@ -3,6 +3,25 @@ import { join } from 'node:path'
 import type { MuConfig, WakeTrigger, Commitment } from './types.js'
 import { loadMood } from '../memory/layers/mood.js'
 
+export interface QuietConfig { quietStart: number; quietEnd: number; maxPerHour: number }
+
+// 主动通信的频率保护决策(纯函数,可单测)。深夜不打扰(跨午夜判断对齐 scheduler.clamp)、
+// 每小时上限(滑窗 1h)、连续 3 条没回降频。返回决策 + 剪枝后的 sentLog(quiet 时不剪)。
+export function decideCanSend(
+  now: number, sentLog: number[], unrepliedStreak: number, c: QuietConfig,
+): { ok: boolean; prunedLog: number[] } {
+  const hour = new Date(now).getHours()
+  const inQuiet = c.quietStart < c.quietEnd
+    ? (hour >= c.quietStart && hour < c.quietEnd)
+    : (hour >= c.quietStart || hour < c.quietEnd)
+  if (inQuiet) return { ok: false, prunedLog: sentLog }
+
+  const prunedLog = sentLog.filter(t => t > now - 3600_000)
+  if (prunedLog.length >= c.maxPerHour) return { ok: false, prunedLog }
+  if (unrepliedStreak >= 3) return { ok: false, prunedLog }
+  return { ok: true, prunedLog }
+}
+
 // 本地日期(YYYY-MM-DD)。承诺的 due 是模型按本地时间锚点填的，比较必须用本地日期而非 UTC
 function localDateStr(d = new Date()): string {
   const y = d.getFullYear()
@@ -145,24 +164,13 @@ export class ProactiveManager {
   }
 
   private canSendNow(): boolean {
-    const now = new Date()
-    const hour = now.getHours()
-    const qs = this.config.proactive?.quiet_start_hour ?? 1
-    const qe = this.config.proactive?.quiet_end_hour ?? 8
-    // 深夜不打扰
-    const inQuiet = qs < qe ? (hour >= qs && hour < qe) : (hour >= qs || hour < qe)
-    if (inQuiet) return false
-
-    // 每小时上限
-    const cutoff = Date.now() - 3600_000
-    this.sentLog = this.sentLog.filter(t => t > cutoff)
-    const max = this.config.proactive?.max_per_hour ?? 5
-    if (this.sentLog.length >= max) return false
-
-    // 连续 3 条没回,降频(他在忙)
-    if (this.unrepliedStreak >= 3) return false
-
-    return true
+    const { ok, prunedLog } = decideCanSend(Date.now(), this.sentLog, this.unrepliedStreak, {
+      quietStart: this.config.proactive?.quiet_start_hour ?? 1,
+      quietEnd: this.config.proactive?.quiet_end_hour ?? 8,
+      maxPerHour: this.config.proactive?.max_per_hour ?? 5,
+    })
+    this.sentLog = prunedLog
+    return ok
   }
 
   private loadState(): void {

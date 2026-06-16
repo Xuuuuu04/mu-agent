@@ -3,8 +3,46 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { ProactiveManager } from './proactive.js'
+import { ProactiveManager, decideCanSend } from './proactive.js'
 import type { MuConfig, WakeTrigger } from './types.js'
+
+// ── decideCanSend 纯决策(深夜防扰/每小时上限/连续未回降频)──
+const at = (hour: number) => new Date(2026, 5, 16, hour, 0, 0).getTime()
+const QC = { quietStart: 1, quietEnd: 8, maxPerHour: 5 }
+
+test('decideCanSend: 深夜(1-8)不打扰', () => {
+  assert.equal(decideCanSend(at(2), [], 0, QC).ok, false)
+  assert.equal(decideCanSend(at(7), [], 0, QC).ok, false)   // 7 点仍静默(<8)
+  assert.equal(decideCanSend(at(8), [], 0, QC).ok, true)    // 8 点解禁
+  assert.equal(decideCanSend(at(14), [], 0, QC).ok, true)
+})
+
+test('decideCanSend: quiet 跨午夜(23-7)', () => {
+  const c = { quietStart: 23, quietEnd: 7, maxPerHour: 5 }
+  assert.equal(decideCanSend(at(23), [], 0, c).ok, false)
+  assert.equal(decideCanSend(at(3), [], 0, c).ok, false)
+  assert.equal(decideCanSend(at(12), [], 0, c).ok, true)
+})
+
+test('decideCanSend: 每小时上限(滑窗,过期的不算)', () => {
+  const now = at(14)
+  const recent = [now - 1000, now - 2000, now - 3000, now - 4000, now - 5000]   // 5 条近 1h
+  assert.equal(decideCanSend(now, recent, 0, QC).ok, false, '满 5 条挡住')
+  const old = recent.map(t => t - 3700_000)                                      // 都超 1h
+  const r = decideCanSend(now, old, 0, QC)
+  assert.equal(r.ok, true, '过期的剪掉后未满')
+  assert.equal(r.prunedLog.length, 0, '过期时间戳被剪')
+})
+
+test('decideCanSend: 连续 3 条没回降频', () => {
+  assert.equal(decideCanSend(at(14), [], 3, QC).ok, false)
+  assert.equal(decideCanSend(at(14), [], 2, QC).ok, true)
+})
+
+test('decideCanSend: 深夜时不剪 sentLog(prune 在 quiet 检查之后)', () => {
+  const log = [at(2) - 9999_999]
+  assert.deepEqual(decideCanSend(at(2), log, 0, QC).prunedLog, log)
+})
 
 // proactive.ts 的频率保护逻辑(canSendNow/collectReasons/dueCommitments/evaluate)全是 private,
 // 唯一入口是 start() 装的 10 分钟 setInterval,且 canSendNow 直接读 new Date().getHours()——
