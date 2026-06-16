@@ -61,6 +61,15 @@ pnpm mu config        # 看配置(密钥打码)
 
 REPL 里也能用 `/status` `/clear` `/quit`。
 
+## 测试
+
+```bash
+pnpm test         # TS 单测(node:test,零依赖;pretest 先跑 tsc --noEmit)
+pnpm test:py      # bridge 纯逻辑(python unittest,零依赖)
+```
+
+400+ 个 characterization test 锁住高危行为(会话裁剪切点、[WAKE]/[MOOD] 解析、cache 顺序、中文检索转义、频率保护等)。架构全景见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。部署后还有 `scripts/persona-regression.sh` 召回/人格回归。三层:单测(逻辑)→ 冒烟(接线)→ 人格回归(她还是她)。
+
 ## 内置工具
 
 文件读写、shell、网页抓取、web_search(智谱→MiniMax→必应→DDG 四级降级)、message_send(主动发消息,可带图/表情包)、voice_send(她的声音)、schedule_wake、记忆管理(save/search/update/forget,四路检索:事实/对话/档案/她的笔记)、承诺管理、知识笔记、意识流备注、tool_create(自造工具)。
