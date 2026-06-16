@@ -10,8 +10,10 @@ import type { ProviderConfig, ChatMessage } from '../core/types.js'
 // 不碰构造路径,不动源码。
 function routerWith(primary: ModelProvider, fallbacks: ModelProvider[] = []): ModelRouter {
   const r = Object.create(ModelRouter.prototype) as ModelRouter
-  ;(r as unknown as { primary: ModelProvider; fallbacks: ModelProvider[] }).primary = primary
-  ;(r as unknown as { primary: ModelProvider; fallbacks: ModelProvider[] }).fallbacks = fallbacks
+  const rr = r as unknown as { primary: ModelProvider; fallbacks: ModelProvider[]; cooldowns: Map<string, number> }
+  rr.primary = primary
+  rr.fallbacks = fallbacks
+  rr.cooldowns = new Map()
   return r
 }
 
@@ -109,6 +111,63 @@ test('forProvider:单 provider,无 fallback(挂了就直接抛)', async () => {
   const r = routerWith(failProvider('solo', calls, 'solo boom'))
   await assert.rejects(r.chat(baseParams), /solo boom/)
   assert.deepEqual(calls, ['solo'])
+})
+
+// ---- 冷却机制 ----
+
+test('429 错误后 provider 被冷却,第二次调用直接跳到 fallback', async () => {
+  const calls: string[] = []
+  const r = routerWith(
+    failProvider('glm', calls, 'glm HTTP 429: rate limited'),
+    [okProvider('minimax', calls)],
+  )
+  // 第一次:glm 429 → fallback minimax
+  await r.chat(baseParams)
+  assert.deepEqual(calls, ['glm', 'minimax'])
+
+  calls.length = 0
+  // 第二次:glm 在冷却期 → 直接走 minimax,不白费 3 轮 retry
+  await r.chat(baseParams)
+  assert.deepEqual(calls, ['minimax'])
+})
+
+test('非 429 错误也会短冷却', async () => {
+  const calls: string[] = []
+  const r = routerWith(
+    failProvider('glm', calls, 'glm HTTP 500: server error'),
+    [okProvider('minimax', calls)],
+  )
+  await r.chat(baseParams)
+  assert.deepEqual(calls, ['glm', 'minimax'])
+
+  calls.length = 0
+  await r.chat(baseParams)
+  assert.deepEqual(calls, ['minimax'])
+})
+
+test('所有 provider 都冷却 → 清除冷却重试全部', async () => {
+  let glmFails = true
+  const calls: string[] = []
+  const glm: ModelProvider = {
+    name: 'glm', config: { ...fakeConfig, name: 'glm' },
+    async chat() {
+      calls.push('glm')
+      if (glmFails) throw new Error('glm HTTP 429: rate limited')
+      return { id: 'id-glm', content: [{ type: 'text', text: 'ok' }], stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } }
+    },
+  }
+  const r = routerWith(glm, [failProvider('fb', calls, 'fb HTTP 429: rate limited')])
+
+  // 两个都 429 → 全冷却 → 最后一个 throw
+  await assert.rejects(r.chat(baseParams), /fb HTTP 429/)
+  assert.deepEqual(calls, ['glm', 'fb'])
+
+  // 下一次调用:全冷却 → 清除 → 重试全部。这次 glm 恢复了
+  calls.length = 0
+  glmFails = false
+  const res = await r.chat(baseParams)
+  assert.equal(res.id, 'id-glm')
+  assert.deepEqual(calls, ['glm'])
 })
 
 test('sanitizeMessages 接入:孤儿 tool_result 被剔后仍正常路由到 primary', async () => {

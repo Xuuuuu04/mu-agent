@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionStore } from './session-store.js'
@@ -116,6 +116,10 @@ test('restore:剔孤儿 tool_result + trim;坏文件不崩', () => withStore((s,
   assert.ok(noOrphans(msgs), '孤儿被剔')
   assert.equal(s.sessionId, 's_old')
   assert.equal(s.lastActivity, 123)
+
+  // 清理后文件应被覆写,下次重启不再重复告警(孤儿幽灵 fix)
+  const persisted = JSON.parse(readFileSync(file, 'utf-8')) as { history: ChatMessage[] }
+  assert.ok(noOrphans(persisted.history), '落盘文件里孤儿也被清掉了')
 
   // 坏 JSON 不崩
   writeFileSync(file, '{坏的')

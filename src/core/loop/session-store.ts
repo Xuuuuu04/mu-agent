@@ -115,6 +115,8 @@ export class SessionStore {
       if (typeof saved.sessionId === 'string' && saved.sessionId) this._sessionId = saved.sessionId
       if (typeof saved.lastActivity === 'number') this._lastActivity = saved.lastActivity
       console.log(`[agent-loop] 恢复落盘会话: ${this.history.length} 条 (${this._sessionId})`)
+      // 清理了脏数据就立即写回,不然每次重启都重复告警(孤儿幽灵)
+      if (dropped.length > 0) this.persist()
     } catch { /* 文件坏了当全新会话 */ }
   }
 
