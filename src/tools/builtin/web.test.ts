@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { webFetchTool, ssrfBlocked } from './web.js'
+import { webFetchTool, ssrfBlocked, htmlToText } from './web.js'
 import type { ToolContext } from '../../core/types.js'
 
 // web_fetch.execute 直接调全局 fetch(无注入点),用替换 globalThis.fetch + finally 还原。
@@ -95,14 +95,39 @@ test('web_fetch: ssrf 命中 → 直接失败,不发请求', async () => {
   })
 })
 
-test('web_fetch: 普通 HTML text 原样返回(无清洗去标签)', async () => {
-  // 锁定真实行为:web_fetch 并不去 HTML 标签,直接返回原文。
-  const html = '<html><body><h1>标题</h1><script>alert(1)</script></body></html>'
+test('web_fetch: text/html 去标签/脚本,返回可读正文', async () => {
+  const html = '<html><body><h1>标题</h1><script>alert(1)</script><p>正文一段</p></body></html>'
   await withFetch(async () => fakeResponse({ contentType: 'text/html', body: html }), async () => {
     const r = await webFetchTool.execute({ url: 'https://example.com/' }, dummyCtx)
     assert.equal(r.success, true)
-    assert.equal(r.output, html)
+    assert.ok(r.output.includes('标题'))
+    assert.ok(r.output.includes('正文一段'))
+    assert.ok(!r.output.includes('<'), '无残留标签')
+    assert.ok(!r.output.includes('alert(1)'), 'script 内容被删')
   })
+})
+
+// ---------- htmlToText(纯函数)----------
+test('htmlToText: 删 script/style/注释', () => {
+  const out = htmlToText('<style>.a{}</style><script>x()</script><!--c--><p>正文</p>')
+  assert.ok(out.includes('正文'))
+  assert.ok(!out.includes('x()') && !out.includes('.a{}') && !out.includes('c'))
+})
+
+test('htmlToText: 块级标签收尾换行,剥剩余标签', () => {
+  const out = htmlToText('<p>第一段</p><p>第二段</p>')
+  assert.match(out, /第一段\n第二段/)
+  assert.ok(!out.includes('<'))
+})
+
+test('htmlToText: 解常见实体', () => {
+  assert.equal(htmlToText('a&amp;b&lt;c&gt;d&nbsp;e&#39;f'), "a&b<c>d e'f")
+})
+
+test('htmlToText: 折叠多余空白', () => {
+  const out = htmlToText('<div>  a   b  </div>\n\n\n\n<div>c</div>')
+  assert.ok(!out.includes('   '))
+  assert.ok(!/\n{3,}/.test(out))
 })
 
 test('web_fetch: content-type 含 json → JSON.stringify 美化两空格缩进', async () => {

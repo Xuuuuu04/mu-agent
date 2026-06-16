@@ -41,6 +41,8 @@ export const webFetchTool: ToolDef = {
         text = JSON.stringify(json, null, 2)
       } else {
         text = await response.text()
+        // text/html 去标签/脚本,返回可读正文——否则模型拿到一墙 HTML 标记,既没用又吃光上下文
+        if (contentType.includes('html')) text = htmlToText(text)
       }
 
       if (text.length > 20000) {
@@ -64,6 +66,29 @@ export const webFetchTool: ToolDef = {
       }
     }
   },
+}
+
+// HTML → 可读正文:删 script/style/注释,块级标签收尾换行,剥剩余标签,解常见实体,折叠空白。
+// 给模型读的是文章不是标记。轻量正则版(不引 cheerio 等重依赖)。
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<\/(p|div|br|li|h[1-6]|tr|section|article|header|footer)\s*\/?>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n)))
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 // SSRF 防护：模型给的 url 可能指向本机服务(:3210 webhook / :3212 send)、私网、云元数据(169.254)

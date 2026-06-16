@@ -152,6 +152,37 @@ test('loadConfig: config.yaml 不存在且无 example 抛找不到', () => {
   }
 })
 
+test('loadConfig: 负数唤醒间隔抛错', () => {
+  const yaml = minimalYaml + `
+scheduler:
+  min_wake_seconds: -5
+`
+  withConfig(yaml, (root) => {
+    assert.throws(() => loadConfig(root), /唤醒间隔必须为正数/)
+  })
+})
+
+test('loadConfig: min_wake > max_wake 抛错', () => {
+  const yaml = minimalYaml + `
+scheduler:
+  min_wake_seconds: 9999
+  max_wake_seconds: 100
+`
+  withConfig(yaml, (root) => {
+    assert.throws(() => loadConfig(root), /不能大于 max_wake_seconds/)
+  })
+})
+
+test('loadConfig: max_turns_per_cycle 为 0 抛错', () => {
+  const yaml = minimalYaml + `
+agent:
+  max_turns_per_cycle: 0
+`
+  withConfig(yaml, (root) => {
+    assert.throws(() => loadConfig(root), /max_turns_per_cycle 必须/)
+  })
+})
+
 test('loadConfig: config.yaml 缺失则从 example 拷贝后再读', () => {
   const root = mkdtempSync(join(tmpdir(), 'mu-cfg-'))
   try {
