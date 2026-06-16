@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test --test-force-exit \"src/**/*.test.ts\"",
     "test:watch": "tsx --test --watch \"src/**/*.test.ts\"",
+    "test:py": "python3 -m unittest scripts.test_bridge_pure",
     "pretest": "tsc --noEmit"
   },
   "dependencies": {
