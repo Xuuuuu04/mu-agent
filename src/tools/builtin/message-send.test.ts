@@ -187,3 +187,31 @@ test('message_send: 只有图没有文字也能发(text 空但 image 非空)', a
   assert.equal(ctx.calls.length, 1)
   assert.equal(ctx.calls[0]!.text, '')
 })
+
+// ── image_path 路径规范化(06-17:修表情包相对路径直传 bridge 必 404 的根因)──
+
+test('message_send: 相对图片路径规范化为 dataDir 下绝对路径(表情包/生成图都靠这个)', async () => {
+  const ctx = makeCtx({ quiet: nonQuietWindow() })
+  await messageSendTool.execute({ text: uniq('相对图'), image_path: '表情包/开心蹦跳.png' }, ctx)
+  assert.equal(ctx.calls[0]!.imagePath, '/tmp/none/表情包/开心蹦跳.png')
+})
+
+test('message_send: 带 data/ 前缀也剥掉,不双重嵌套(dataDir/data/x 坑)', async () => {
+  const ctx = makeCtx({ quiet: nonQuietWindow() })
+  await messageSendTool.execute({ text: uniq('data前缀'), image_path: 'data/生成图/abc.png' }, ctx)
+  assert.equal(ctx.calls[0]!.imagePath, '/tmp/none/生成图/abc.png')
+})
+
+test('message_send: 绝对图片路径原样透传(image_gen 也可返回绝对)', async () => {
+  const ctx = makeCtx({ quiet: nonQuietWindow() })
+  await messageSendTool.execute({ text: uniq('绝对图'), image_path: '/tmp/none/x/cat.png' }, ctx)
+  assert.equal(ctx.calls[0]!.imagePath, '/tmp/none/x/cat.png')
+})
+
+test('message_send: 图片路径逃出 data 沙箱 → 失败,不发', async () => {
+  const ctx = makeCtx({ quiet: nonQuietWindow() })
+  const r = await messageSendTool.execute({ text: uniq('逃逸'), image_path: '../../etc/passwd' }, ctx)
+  assert.equal(r.success, false)
+  assert.match(r.error ?? '', /data 外面/)
+  assert.equal(ctx.calls.length, 0)
+})

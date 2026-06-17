@@ -1,5 +1,7 @@
+import { isAbsolute } from 'node:path'
 import type { ToolDef } from '../../core/types.js'
 import { extractEntities } from '../../memory/entities.js'
+import { resolveSafe } from './file.js'
 
 // 同一内容 60 秒去重,防止 glitch 刷屏
 const recentSends = new Map<string, number>()
@@ -14,8 +16,18 @@ export const messageSendTool: ToolDef = {
   },
   async execute(params, ctx) {
     const text = String(params.text ?? '').trim()
-    const imagePath = String(params.image_path ?? '').trim() || undefined
-    if (!text && !imagePath) return { success: false, output: '', error: '消息为空' }
+    const rawImagePath = String(params.image_path ?? '').trim() || undefined
+    if (!text && !rawImagePath) return { success: false, output: '', error: '消息为空' }
+
+    // image_path 规范化:她按"相对 data/"约定填(和 file 工具一致,如 表情包/x.png、生成图/x.png),
+    // 转成 bridge 能 open 的绝对路径。06-17 修:bridge CWD 在 mu 根、直接 open(image),
+    // 相对路径 "表情包/x.png" 会落到 mu 根而非 data/ 下 → 必 404。resolveSafe 顺带剥 data/ 前缀+防逃逸。
+    let imagePath = rawImagePath
+    if (rawImagePath) {
+      const resolved = isAbsolute(rawImagePath) ? rawImagePath : resolveSafe(ctx.dataDir, rawImagePath)
+      if (!resolved) return { success: false, output: '', error: `图片路径跑到 data 外面了: ${rawImagePath}` }
+      imagePath = resolved
+    }
 
     // 哥哥常态凌晨 1-5 点睡、11-12 点起:quiet 时段(随 proactive 配置)的非紧急主动消息
     // 软拦一道——06-11 凌晨 05:53 的"哥哥早~"发在他刚睡着一小时的时候。
