@@ -181,7 +181,7 @@ export class Scheduler {
       nightStart: s.night_start_hour,
       nightEnd: s.night_end_hour,
       min: s.min_wake_seconds,
-      max: s.max_wake_seconds,
+      maxSleep: s.max_sleep_seconds,
       nightMin: s.night_min_wake_seconds,
       moodSleepy: this.loadMood()?.current === 'sleepy',
     })
@@ -203,7 +203,7 @@ export interface ClampWakeConfig {
   nightStart: number    // 深夜起始小时
   nightEnd: number      // 深夜结束小时
   min: number           // 正常时段最小唤醒间隔(秒)
-  max: number           // 最大唤醒间隔(秒)
+  maxSleep: number      // 最大允许睡眠时长(秒),与 cron 链断检测(max_wake_seconds)解耦
   nightMin: number      // 深夜最小唤醒间隔(秒)
   moodSleepy: boolean   // 当前心情是否 sleepy
 }
@@ -216,5 +216,5 @@ export function clampWake(seconds: number, c: ClampWakeConfig): number {
     : (c.hour >= c.nightStart || c.hour < c.nightEnd)
   let min = isNight ? c.nightMin : c.min
   if (c.moodSleepy) min = Math.max(min, 1800)
-  return Math.max(min, Math.min(c.max, seconds))
+  return Math.max(min, Math.min(c.maxSleep, seconds))
 }

@@ -13,7 +13,7 @@ import type { ChatResponse } from '../providers/base.js'
 function minimalConfig(dataDir: string): MuConfig {
   return {
     model: { primary: { name: 'fake', format: 'openai', base_url: '', api_key: '', model: 'm', max_tokens: 4096 } },
-    scheduler: { min_wake_seconds: 120, max_wake_seconds: 3600, cron_fallback_seconds: 900, night_min_wake_seconds: 1800, night_start_hour: 23, night_end_hour: 7 },
+    scheduler: { min_wake_seconds: 120, max_wake_seconds: 3600, max_sleep_seconds: 28800, cron_fallback_seconds: 900, night_min_wake_seconds: 1800, night_start_hour: 23, night_end_hour: 7 },
     agent: { max_turns_per_cycle: 10, session_timeout_minutes: 30 },
     paths: { soul: dataDir, data: dataDir, tools: join(dataDir, 'tools') },
   }

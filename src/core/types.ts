@@ -11,6 +11,7 @@ export interface MuConfig {
   scheduler: {
     min_wake_seconds: number
     max_wake_seconds: number
+    max_sleep_seconds: number
     cron_fallback_seconds: number
     night_min_wake_seconds: number
     night_start_hour: number
@@ -34,6 +35,11 @@ export interface MuConfig {
       // MiniMax Coding Plan 的 /v1/coding_plan/search(套餐内,与 fallback 模型同一把 sk-cp key)
       minimax_api_key?: string
       minimax_base_url?: string
+    }
+    // image_gen 画图工具:ComfyUI host + 底模(都有工具内默认值,不配也能跑)
+    image?: {
+      host?: string
+      checkpoint?: string
     }
     // 她的声音:voice_design 定制声线 + t2a。voice_send 工具用
     voice?: {

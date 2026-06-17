@@ -34,7 +34,7 @@ function baseConfig(webSearch?: NonNullable<MuConfig['tools']>['web_search']): M
   return {
     model: { primary: { name: 'p', format: 'openai', base_url: '', api_key: '', model: 'm' } },
     scheduler: {
-      min_wake_seconds: 120, max_wake_seconds: 3600, cron_fallback_seconds: 900,
+      min_wake_seconds: 120, max_wake_seconds: 3600, max_sleep_seconds: 28800, cron_fallback_seconds: 900,
       night_min_wake_seconds: 1800, night_start_hour: 0, night_end_hour: 7,
     },
     agent: { max_turns_per_cycle: 10, session_timeout_minutes: 30 },

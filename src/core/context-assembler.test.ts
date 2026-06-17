@@ -43,6 +43,7 @@ function makeConfig(soul: string, data: string): MuConfig {
     scheduler: {
       min_wake_seconds: 120,
       max_wake_seconds: 3600,
+      max_sleep_seconds: 28800,
       cron_fallback_seconds: 900,
       night_min_wake_seconds: 1800,
       night_start_hour: 23,

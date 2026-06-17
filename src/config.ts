@@ -33,6 +33,7 @@ export function loadConfig(projectRoot: string): MuConfig {
   parsed.scheduler = {
     min_wake_seconds: 300,
     max_wake_seconds: 14400,
+    max_sleep_seconds: 28800,
     cron_fallback_seconds: 7200,
     night_min_wake_seconds: 3600,
     night_start_hour: 1,
@@ -67,6 +68,9 @@ function validate(config: MuConfig): void {
   }
   if (s.min_wake_seconds > s.max_wake_seconds) {
     throw new Error('config: scheduler.min_wake_seconds 不能大于 max_wake_seconds')
+  }
+  if (s.max_sleep_seconds < s.max_wake_seconds) {
+    throw new Error('config: scheduler.max_sleep_seconds 不能小于 max_wake_seconds')
   }
   if (config.agent.max_turns_per_cycle < 1) {
     throw new Error('config: agent.max_turns_per_cycle 必须 ≥1')
