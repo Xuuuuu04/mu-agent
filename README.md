@@ -36,7 +36,7 @@ pnpm start          # 启动沐(CLI + Web + Webhook)
 ```
 src/
   core/        agent-loop / context-assembler / scheduler / proactive / sysinfo / logger
-  memory/      六层记忆 + store(SQLite) + embedding + consolidation
+  memory/      七层记忆(layers/) + store(SQLite) + embedding + consolidation
   providers/   anthropic / openai / router
   tools/       内置工具 + 热加载 + MCP 客户端
   gateway/     cli / webhook(QQ、微信的 Python bridge 都 POST 到这里)

@@ -13,12 +13,13 @@ pnpm typecheck        # tsc --noEmit(提交前必跑)
 pnpm build            # tsup 打 dist —— 只用于类型验证/产物,生产不用 dist
 pnpm mu <cmd>         # 另开终端的管理命令:status / memory <词> / wake / logs / config
 pnpm test             # node:test 单测(co-located *.test.ts,提交前必跑;pretest 挂 typecheck)
+pnpm test:py          # bridge 纯逻辑单测(python unittest,scripts/test_bridge_pure.py,无网络)
 ssh xpark 'bash /home/xpark/mu/scripts/persona-regression.sh'          # 召回回归(零成本,17查询基线 17/17)
 ssh xpark 'bash /home/xpark/mu/scripts/persona-regression.sh --full'   # +5 个 LLM 场景(烧 token,自动备份/还原/清痕)
 ```
 
 - **运行用 tsx 直跑 `src/`,不是 `dist/`**。改了 TS 不用 build,重启进程即可。
-- **测试**:`pnpm test`(node:test,零依赖,co-located `*.test.ts`,400+ 个 characterization test 锁住高危行为)。`src/test-{chat,multi,search,webhook}.ts` 是需真实 LLM/网络的手动 L2 冒烟脚本。`scripts/persona-regression.sh` 是部署后回归基线(大改 soul/记忆系统后必跑,对照上次结果)。三层:单测(逻辑)→ 冒烟(接线)→ 人格回归(她还是她)。
+- **测试**:`pnpm test`(node:test,零依赖,co-located `*.test.ts`,400+ 个 characterization test 锁住高危行为;TS 侧)。Python bridge 纯逻辑走 `pnpm test:py`(unittest,无网络)。`src/test-{chat,multi,search,webhook}.ts` 是需真实 LLM/网络的手动 L2 冒烟脚本。`scripts/persona-regression.sh` 是部署后回归基线(大改 soul/记忆系统后必跑,对照上次结果)。三层:单测(逻辑)→ 冒烟(接线)→ 人格回归(她还是她)。
 - **架构全景见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**(进程/核心循环/七层记忆/自愈"别拆"清单)。
 - Node 22+,ESM(`"type": "module"`),import 路径带 `.js` 后缀(NodeNext)。
 - 仓库:`github.com/Xuuuuu04/mu-agent`(private)。remote 走 HTTPS+gh 凭据(本机代理拦 SSH 22)。
@@ -69,6 +70,7 @@ ssh xpark 'bash /home/xpark/mu/scripts/persona-regression.sh --full'   # +5 个 
 
 ## 记忆系统(src/memory/)
 
+- **七层结构在 `src/memory/layers/`**:identity/temporal/stream/relations/episodic/procedural/world(+mood);装配顺序由 `context-assembler.ts` 定。`embedding.ts` 是向量服务(BGE-M3 本地或 SiliconFlow,没配自动降级 FTS),`entities.ts` 抽实体。
 - `store.ts`:better-sqlite3,episodes FTS5(`unicode61`)由 trigger 同步(别手动 INSERT episodes_fts)。**中文 FTS 坑**:子串 MATCH 不到,检索走 `searchHybrid`(FTS→LIKE 兜底,LIKE 已转义 %_)。
 - **memory_search 四路**(以前只搜 facts 是半盲的):user-facts → episodes+daily_summaries → `xiaomu-home` 核心档案 → **她的 knowledge 笔记**(searchKnowledge,标题+内容两级,/memory 命令同覆盖)。回归基线 12/12。
 - **rag-kb 向量库**(LanceDB,`.hermes/workspace/kb-data`):旧档案 604 docs + 她的笔记;**每日 04:50 cron 增量**(ingest_mu_knowledge.py,state 记账幂等)——她改旧笔记会按 mtime 重灌,同 doc 重复 chunk 风险待观察。
@@ -92,16 +94,20 @@ data/表情包/       她的表情包仓库(文件名即语义,message_send imag
 
 ## 模型 provider(src/providers/)
 
-- `router.ts`:primary(glm-5.1, openai 格式)+ fallback 链(claude-sonnet-4-6 / minimax-m3)。
+- `router.ts`:primary(glm-5.1, openai 格式)+ fallback 链(claude-sonnet-4-6 / minimax-m3)。两条线协议:`openai.ts`(GLM/DeepSeek)和 `anthropic.ts`(Claude/Minimax),`base.ts` 是公共抽象。
 - **`openai.ts` 的 `sanitizeSchema`**:GLM function-calling 严格,anyOf/format/const 等会 400(code 1210),发送前清洗。
+- **`sanitize-messages.ts`**:发送前剔孤儿工具块的最后一道防线(和 history.ts 的 trimHistory 互补——GLM 对孤儿 tool_result 一律 400)。
 - `temperature`(0.9 已配)和 `supports_thinking_control`(寒暄禁推理)透传两种格式。
 - GLM-5.1 是推理模型,慢(30-120s)且 `max_tokens` 要大(8192),否则 content 被 reasoning 吃光。
 
 ## 内置工具要点
 
+- 工具在 `src/tools/builtin/`,`registry.ts` 注册(`reserved: true` 防她自造工具顶替核心),`hot-reload.ts` 热加载 `data/tools/*.json`。
 - `web_search` 四级降级:智谱(没余额自动跳过)→ **MiniMax(主力,coding_plan/search 套餐内)** → cn.bing.com 直爬 → DDG(xpark 不通,名义兜底)。改 search.ts 别动顺序。
 - `voice_send`:她的声音。声线 voice_id 在 config `tools.voice`,4 轮试听定版(甜软少女音);重生成走 POST /v1/voice_design。
+- `image_gen`(`image-gen.ts`):她自己画图,走本地 ComfyUI SDXL(checkpoint/steps/seed 可调),出图经 message_send image_path 发哥哥。
 - 表情包:`data/表情包/`,message_send image_path 直发,她自己攒。
+- **MCP**:`src/tools/mcp/`(McpManager/McpClient)连外部 MCP server,server 列表在 config `mcp`。
 
 ## Web(她的"小房间")
 
@@ -112,7 +118,7 @@ data/表情包/       她的表情包仓库(文件名即语义,message_send imag
 - `soul/`(**gitignored**):identity / style / values。含她的来历(三次搬家)、思维方式、学识声明、深层回应铁律("陪=在+不抢")、深度对话 few-shot。**改 soul 是动人格,小步增量,改完跑 persona-regression 对照。**
 - `BEHAVIOR_RULES`(context-assembler.ts):系统纪律——主动记忆、自决唤醒、醒来干什么(自主生活/自省/日记)、照看机器(运维纪律)、说话别穿帮(禁报系统数字/禁复读)。
 - 分工:soul 管"她是谁",BEHAVIOR_RULES 管"系统纪律"。
-- `style-guard.ts` 只挡发给用户的消息;内心独白入库由 postProcess 过 guardStyle。
+- `style-guard.ts`(`src/soul/`)只挡发给用户的消息;内心独白入库由 postProcess 过 guardStyle。
 
 ## 部署(xpark 服务器)
 

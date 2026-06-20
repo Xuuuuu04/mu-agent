@@ -204,7 +204,7 @@ data/表情包/       她的表情包仓库(文件名即语义)
 
 | 层 | 跑什么 | 命令 |
 |---|---|---|
-| **L1 本地单测** | 8 个高危纯函数 characterization test(node:test) | `pnpm test` |
+| **L1 本地单测** | 400+ 个 characterization test(44 文件,node:test;另 `pnpm test:py` 跑 bridge) | `pnpm test` |
 | **L2 本地冒烟** | 真 LLM 单/多轮、真搜索(网络依赖,手动) | `tsx src/test-chat.ts` 等 |
 | **L3 部署后回归** | 12/12 召回基线 + 人格场景 | `ssh xpark 'bash scripts/persona-regression.sh'` |
 
