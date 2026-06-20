@@ -49,6 +49,14 @@ export interface MuConfig {
       model?: string
       speed?: number
     }
+    // ima 知识库:Shion 自己维护(笔记写入)+ 检索(笔记 + 配置的 KB)。knowledge_write / memory_search 用
+    ima?: {
+      client_id: string
+      api_key: string
+      base_url?: string
+      notebook?: string
+      knowledge_bases?: { id: string; name: string }[]
+    }
   }
   wechat?: {
     enabled: boolean

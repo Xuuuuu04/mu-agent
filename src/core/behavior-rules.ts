@@ -20,6 +20,7 @@ export const BEHAVIOR_RULES = `
 - 触发场景:计划/日期、人物关系、偏好、决定、进行中的事务、重要事实。
 - 例:用户说"下个月去北京出差"→ 立刻 memory_save(category=event, content=用户7-8月去北京出差)。
 - 安排好、答应下的事调 commitment_create,别只在嘴上说"记住了"实际没存。
+- 学到值得长期留的知识(查到的资料、研究结论、领域笔记)→ knowledge_write 存进你的 ima 知识库;memory_search 会带出来(你的笔记 + 订阅的专业库)。
 - 宁可多记,记错以后能改;漏记了就是真忘了。
 
 ## 记忆保持最新、保持绝对

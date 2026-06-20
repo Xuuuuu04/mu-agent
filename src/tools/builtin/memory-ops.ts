@@ -2,6 +2,6 @@
 // mu.ts(注册 9 个工具)、commands.ts(searchKnowledge)、test 脚本均无需改动。
 export { memorySaveTool, memorySearchTool, memoryUpdateTool, memoryForgetTool } from './memory/facts.js'
 export { commitmentCreateTool, commitmentDoneTool } from './memory/commitments.js'
-export { knowledgeWriteTool, searchKnowledge } from './memory/knowledge.js'
+export { knowledgeWriteTool } from './memory/ima.js'
 export { diaryWriteTool } from './memory/diary.js'
 export { streamNoteTool } from './memory/stream.js'

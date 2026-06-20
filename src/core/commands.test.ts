@@ -261,17 +261,6 @@ test('tryCommand: /memory 关键词命中 episodes', () => {
   } finally { cleanup() }
 })
 
-test('tryCommand: /memory 命中 knowledge 笔记', () => {
-  const { deps, cleanup, dataDir } = makeDeps()
-  try {
-    mkdirSync(join(dataDir, 'knowledge'), { recursive: true })
-    writeFileSync(join(dataDir, 'knowledge', '潜水学习笔记.md'), '# 潜水学习笔记\n\n开放水域第一课')
-    const out = tryCommand('/memory 潜水', deps)
-    assert.match(out!, /笔记/)
-    assert.match(out!, /潜水/)
-  } finally { cleanup() }
-})
-
 test('tryCommand: /memory 无任何命中返回没找到', () => {
   const { deps, cleanup } = makeDeps()
   try {

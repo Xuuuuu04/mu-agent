@@ -1,11 +1,11 @@
 // 长期事实 CRUD:记住(save)/ 检索(search,三路)/ 更新(update)/ 忘掉(forget)。
-// 检索:user-facts → episodes+日摘要 → knowledge 笔记。
+// 检索:user-facts → episodes+日摘要 → ima 知识库(笔记 + 订阅 KB)。
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ToolDef } from '../../../core/types.js'
 import { absolutizeTime } from '../../../memory/absolutize.js'
 import { ensureDir, fuzzyMatchLine } from './_shared.js'
-import { searchKnowledge } from './knowledge.js'
+import { searchKnowledgeIma } from './ima.js'
 
 export const memorySaveTool: ToolDef = {
   name: 'memory_save',
@@ -74,10 +74,10 @@ export const memorySearchTool: ToolDef = {
       }
     }
 
-    // 第三路:知识笔记(data/knowledge/)。聊到相关话题时把记过的笔记翻出来用
-    const noted = searchKnowledge(ctx.dataDir, query)
+    // 第三路:ima 知识库(她自己维护的笔记 + 配置的订阅 KB)。未配置则跳过
+    const noted = await searchKnowledgeIma(ctx.config?.tools?.ima, query)
     if (noted.length > 0) {
-      out.push('\n[我的笔记]')
+      out.push('\n[知识库]')
       out.push(...noted)
     }
 

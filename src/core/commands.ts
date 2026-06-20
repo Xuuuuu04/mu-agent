@@ -4,7 +4,6 @@ import type { MemoryStore } from '../memory/store.js'
 import type { Scheduler } from './scheduler.js'
 import type { Commitment, MoodState } from './types.js'
 import { relativeTime } from '../memory/layers/temporal.js'
-import { searchKnowledge } from '../tools/builtin/memory-ops.js'
 
 export interface CommandDeps {
   dataDir: string
@@ -122,10 +121,7 @@ function memoryText(deps: CommandDeps, query: string): string {
   for (const s of deps.store.searchDailySummaries(query, 2)) {
     lines.push(`[${s.date} 摘要] ${s.summary.slice(0, 60)}`)
   }
-  // 知识笔记(与 memory_search 工具同覆盖)
-  for (const k of searchKnowledge(deps.dataDir, query).slice(0, 3)) {
-    lines.push(`[笔记] ${k.slice(0, 80)}`)
-  }
+  // 注:ima 知识库检索是异步的,/memory 这个同步命令不查它;Shion 走 memory_search 工具(含 ima)
   if (lines.length === 0) return `没找到关于"${query}"的记忆`
   return `关于"${query}":\n` + lines.join('\n')
 }

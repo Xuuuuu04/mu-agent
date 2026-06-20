@@ -75,14 +75,6 @@ test('memory_search:大小写不敏感(query 小写命中大写内容)', () => w
   assert.ok(r.output.includes('CZ6309'))
 }))
 
-test('memory_search:第四路命中 knowledge 标题,加 [我的笔记] 表头', () => withCtx(async (ctx, dataDir) => {
-  mkdirSync(join(dataDir, 'knowledge'), { recursive: true })
-  writeFileSync(join(dataDir, 'knowledge', '白银货币化.md'), '# 白银货币化\n张居正一条鞭法', 'utf-8')
-  const r = await memorySearchTool.execute({ query: '白银' }, ctx)
-  assert.ok(r.output.includes('[我的笔记]'))
-  assert.ok(r.output.includes('白银货币化'))
-}))
-
 test('memory_search:全空时返回"没找到"文案,success 仍为 true', () => withCtx(async (ctx) => {
   const r = await memorySearchTool.execute({ query: '不存在的词' }, ctx)
   assert.equal(r.success, true)
