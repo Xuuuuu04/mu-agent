@@ -6,7 +6,9 @@ module.exports = {
   apps: [
     {
       name: 'mu',
-      script: resolve(__dirname, 'node_modules/.bin/tsx'),
+      // 指向 tsx 的 JS CLI(真 .mjs,pm2 用 node 直接跑);
+      // 别指 node_modules/.bin/tsx —— 那是 sh 包装脚本,pm2 拿 node 解析它会 SyntaxError
+      script: resolve(__dirname, 'node_modules/tsx/dist/cli.mjs'),
       args: 'src/mu.ts',
       cwd: __dirname,
       autorestart: true,
