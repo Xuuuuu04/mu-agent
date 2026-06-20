@@ -80,7 +80,7 @@ export class EpisodicLayer {
 
     const lines: string[] = []
     for (const ep of recent.reverse().slice(0, 10)) {
-      const role = ep.role === 'user' ? '哥哥' : '我'
+      const role = ep.role === 'user' ? '用户' : '我'
       const preview = ep.content.slice(0, 80).replace(/\n/g, ' ')
       const time = relativeTime(new Date(ep.timestamp), new Date())
       lines.push(`[${time}] ${role}: ${preview}`)
@@ -199,7 +199,7 @@ export class EpisodicLayer {
     const time = relativeTime(new Date(ep.timestamp), new Date())
     const date = new Date(ep.timestamp)
     const dateStr = `${date.getMonth() + 1}月${date.getDate()}日`
-    const role = ep.role === 'user' ? '哥哥' : '我'
+    const role = ep.role === 'user' ? '用户' : '我'
     const content = ep.content.length > 150
       ? ep.content.slice(0, 150) + '...'
       : ep.content

@@ -93,40 +93,20 @@ test('assemble: 不传任何参数也至少有"现在"和"系统状态"两行', 
   })
 })
 
-test('assemble: 传 lastUserContact 注入"距上次和哥哥说话"', () => {
+test('assemble: 传 lastUserContact 注入"距上次和用户说话"', () => {
   withDataDir((dir) => {
     const out = new TemporalLayer(dir).assemble(new Date(Date.now() - 5 * MIN))
-    assert.match(out, /距上次和哥哥说话: 5分钟前/)
+    assert.match(out, /距上次和用户说话: 5分钟前/)
   })
 })
 
-test('assemble: 传 lastWake 注入"距上次自己醒来"带活动', () => {
+test('assemble: 传 lastWake 注入"距上次唤醒"带活动', () => {
   withDataDir((dir) => {
     const out = new TemporalLayer(dir).assemble(undefined, {
       time: new Date(Date.now() - 2 * HOUR),
       activity: '写日记',
     })
-    assert.match(out, /距上次自己醒来: 2小时前 \(写日记\)/)
-  })
-})
-
-test('assemble: mood.json 存在时注入心情行(current/since/reason)', () => {
-  withDataDir((dir) => {
-    const since = new Date(Date.now() - 3 * HOUR).toISOString()
-    writeFileSync(
-      join(dir, 'memory', 'mood.json'),
-      JSON.stringify({ current: 'missing', since, reason: '想哥哥了' }),
-    )
-    const out = new TemporalLayer(dir).assemble()
-    assert.match(out, /心情: missing \(3小时前,想哥哥了\)/)
-  })
-})
-
-test('assemble: mood.json 损坏(非法 JSON)被吞掉,不抛、无心情行', () => {
-  withDataDir((dir) => {
-    writeFileSync(join(dir, 'memory', 'mood.json'), '{ broken')
-    const out = new TemporalLayer(dir).assemble()
-    assert.doesNotMatch(out, /心情:/)
+    assert.match(out, /距上次唤醒: 2小时前 \(写日记\)/)
   })
 })
 

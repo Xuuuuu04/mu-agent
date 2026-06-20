@@ -40,7 +40,7 @@ export function pruneOldImages(dir: string, keep: number): void {
 
 export const imageGenTool: ToolDef = {
   name: 'image_gen',
-  description: '画一张图给哥哥。心里有个画面、想画点什么送他的时候用——比翻表情包更自由,你想画啥就画啥。用英文关键词描述画面(主体+场景+光线/氛围),比如 "a fluffy cream-white kitten curled up on a warm windowsill, snow falling outside, cozy"。画完会给你图片路径,再用 message_send 的 image_path 配一句话发给他。一张约 20 秒',
+  description: '用本地 SDXL 生成一张图发给用户。用英文关键词描述画面(主体+场景+光线/氛围),比如 "a fluffy cream-white kitten curled up on a warm windowsill, snow falling outside, cozy"。生成后得到图片路径,再用 message_send 的 image_path 发给用户。一张约 20 秒',
   parameters: {
     prompt: { type: 'string', description: '画面描述,英文关键词:主体+场景+氛围/光线,越具体越好。质量词不用写(自动加)' },
     seed: { type: 'number', description: '随机种子(可选)。想在同一张基础上微调就固定它;不填每次都不一样', required: false as unknown as string },
@@ -108,7 +108,7 @@ export const imageGenTool: ToolDef = {
       pruneOldImages(dir, 50)   // 只留最近 50 张,防慢性磁盘泄漏(reviewer #4)
 
       ctx.log(`画好了: "${prompt.slice(0, 40)}" -> ${relPath} (${((Date.now() - t0) / 1000).toFixed(0)}s)`)
-      return { success: true, output: `画好了!图在 ${relPath}\n用 message_send 的 image_path 填这个路径,配一句话发给哥哥。` }
+      return { success: true, output: `生成完成,图在 ${relPath}。用 message_send 的 image_path 填这个路径发给用户。` }
     } catch (err) {
       return { success: false, output: '', error: `画图出错: ${(err as Error).message}` }
     }

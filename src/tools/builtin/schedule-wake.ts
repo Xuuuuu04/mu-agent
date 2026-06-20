@@ -1,16 +1,16 @@
 import type { ToolDef } from '../../core/types.js'
 
-// 用工具调用设置下次唤醒,比在文本里写 [WAKE:...] 更可靠。
-// 实际秒数会被 scheduler 按心情/深夜规则 clamp。
+// 安排定时唤醒,用于给用户做定时提醒。到点 scheduler 唤醒,助理再用 message_send 发提醒。
+// 实际秒数会被 scheduler 按深夜规则 clamp。
 export const scheduleWakeTool: ToolDef = {
   name: 'schedule_wake',
-  description: '决定自己多久后醒来继续做事。看完书想消化、想等会再找哥哥时用',
+  description: '安排在指定秒数后唤醒自己,用于给用户做定时提醒。用户说"X 之后提醒我做某事"时用;到点你会以这个原因被唤醒,那时再用 message_send 把提醒发给用户',
   parameters: {
-    seconds: { type: 'number', description: '多少秒后醒来' },
-    reason: { type: 'string', description: '为什么这个时间醒(给未来的自己看)' },
+    seconds: { type: 'number', description: '多少秒后唤醒' },
+    reason: { type: 'string', description: '到点唤醒的原因(到时你会看到它,据此提醒用户)' },
     activity_type: {
       type: 'string',
-      description: '醒来想做什么: learning/browsing/writing/task/rest/explore',
+      description: '可选标签: task/reminder 等',
       required: false as unknown as string,
     },
   },

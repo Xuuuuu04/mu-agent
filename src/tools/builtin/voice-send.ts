@@ -3,16 +3,15 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { ToolDef } from '../../core/types.js'
 
-// 她的声音:minimax t2a(voice_design 定制的专属声线)→ mp3 → QQ bridge 转 silk 发语音。
+// 语音合成:minimax t2a → mp3 → QQ bridge 转 silk 发语音。
 // 走主动链路(:3212/send),和 message_send 同向;声线 voice_id 在 config.tools.voice。
-// 2026-06-10 诞生:voice_design 按 identity(22岁/清亮带笑/语速稍快)生成,哥哥定版
 export const voiceSendTool: ToolDef = {
   name: 'voice_send',
-  description: '用你自己的声音给哥哥发一条语音(QQ)。想念、晚安、读一段你写的东西——有些话说出来和打出来不一样。语速和情绪按你当下的心情自己定,别每次都一样(那样像机器)。别太长,一条 60 字以内最像说话',
+  description: '把一段文字合成语音发给用户(QQ)。speed 语速、emotion 情绪可调。一条尽量短(60 字以内最自然)',
   parameters: {
-    text: { type: 'string', description: '要说的话(口语,像平时聊天那样)' },
-    speed: { type: 'number', description: '语速 0.8-1.2:撒娇/晚安/认真说事用 0.85-0.95,平常 1.0,兴奋/着急 1.1+。不填=1.0', required: false as unknown as string },
-    emotion: { type: 'string', description: '情绪:happy/sad/surprised/neutral。按你此刻真实的心情填,不确定就不填', required: false as unknown as string },
+    text: { type: 'string', description: '要合成的文字' },
+    speed: { type: 'number', description: '语速 0.8-1.2,默认 1.0', required: false as unknown as string },
+    emotion: { type: 'string', description: '情绪:happy/sad/surprised/neutral,可选', required: false as unknown as string },
   },
   async execute(params, ctx) {
     const text = String(params.text ?? '').trim()

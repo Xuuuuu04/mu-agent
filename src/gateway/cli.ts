@@ -88,7 +88,7 @@ export class CLIGateway implements GatewayAdapter {
         id: `cli-${Date.now()}`,
         source: 'cli',
         chat_type: 'private',
-        sender: { id: 'user', name: '哥哥' },
+        sender: { id: 'user', name: '用户' },
         content: { type: 'text', text: trimmed },
         timestamp: Date.now(),
       })

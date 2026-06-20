@@ -14,7 +14,7 @@ export class RelationsLayer {
 
     const facts = this.loadFacts()
     if (facts) {
-      parts.push('--- 关于哥哥(你记住的事实) ---')
+      parts.push('--- 关于用户(你记住的事实) ---')
       parts.push(facts)
     }
 
@@ -31,7 +31,7 @@ export class RelationsLayer {
     }
 
     if (parts.length === 0) {
-      return '(还没有记住关于哥哥的事实)'
+      return '(还没有记住关于用户的事实)'
     }
 
     return parts.join('\n')

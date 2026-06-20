@@ -8,11 +8,11 @@ const recentSends = new Map<string, number>()
 
 export const messageSendTool: ToolDef = {
   name: 'message_send',
-  description: '主动给哥哥发一条消息。想他了、有事要说、提醒他什么时用。一次只发一条。可以带一张图片(本地路径,比如你的画、截图)',
+  description: '主动给用户发一条消息。有事要告知、到点提醒用户时用。一次只发一条。可以带一张图片(本地路径,比如截图、生成的图)',
   parameters: {
-    text: { type: 'string', description: '要发的话' },
+    text: { type: 'string', description: '要发的内容' },
     image_path: { type: 'string', description: '要发的图片的本地路径(可选,png/jpg)', required: false as unknown as string },
-    urgent: { type: 'boolean', description: '深夜/清晨想发非紧急消息会被拦一道;真有急事(他让你叫他/出大事了)填 true 直接发', required: false as unknown as string },
+    urgent: { type: 'boolean', description: '深夜/清晨的非紧急消息会被软拦一道;确有急事(用户让你叫他/紧急情况)填 true 直接发', required: false as unknown as string },
   },
   async execute(params, ctx) {
     const text = String(params.text ?? '').trim()
@@ -29,9 +29,8 @@ export const messageSendTool: ToolDef = {
       imagePath = resolved
     }
 
-    // 哥哥常态凌晨 1-5 点睡、11-12 点起:quiet 时段(随 proactive 配置)的非紧急主动消息
-    // 软拦一道——06-11 凌晨 05:53 的"哥哥早~"发在他刚睡着一小时的时候。
-    // 不硬禁:急事带 urgent 放行,分寸终归是她自己的
+    // 深夜 quiet 时段(随 proactive 配置,默认 1-8 点)的非紧急主动消息软拦一道,
+    // 避免在用户睡觉时打扰。不硬禁:急事带 urgent 放行
     const hour = new Date().getHours()
     const qs = ctx.config.proactive?.quiet_start_hour ?? 1
     const qe = ctx.config.proactive?.quiet_end_hour ?? 8
@@ -39,7 +38,7 @@ export const messageSendTool: ToolDef = {
     if (inQuiet && params.urgent !== true) {
       return {
         success: false, output: '',
-        error: `现在${hour}点,哥哥多半在睡(他常 11-12 点起)。不是急事就先存着,等他醒了再说;真是急事重新调一次带 urgent: true`,
+        error: `现在${hour}点,用户多半在睡。不是急事就先存着,等他醒了再发;确有急事重新调一次带 urgent: true`,
       }
     }
 
@@ -68,7 +67,7 @@ export const messageSendTool: ToolDef = {
           timestamp: new Date(now).toISOString(),
           source: 'chat',
           role: 'assistant',
-          content: `(主动发给哥哥) ${text}`.slice(0, 500),
+          content: `(主动发给用户) ${text}`.slice(0, 500),
           summary: null,
           embedding: null,
           session_id: null,

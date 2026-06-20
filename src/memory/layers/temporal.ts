@@ -1,6 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import type { MoodState } from '../../core/types.js'
 import { getSysInfo, formatSysInfo } from '../../core/sysinfo.js'
 
 export class TemporalLayer {
@@ -20,17 +19,11 @@ export class TemporalLayer {
     lines.push('')
 
     if (lastUserContact) {
-      lines.push(`距上次和哥哥说话: ${relativeTime(lastUserContact, now)}`)
+      lines.push(`距上次和用户说话: ${relativeTime(lastUserContact, now)}`)
     }
 
     if (lastWake) {
-      lines.push(`距上次自己醒来: ${relativeTime(lastWake.time, now)} (${lastWake.activity})`)
-    }
-
-    const mood = this.loadMood()
-    if (mood) {
-      const moodSince = new Date(mood.since)
-      lines.push(`心情: ${mood.current} (${relativeTime(moodSince, now)},${mood.reason})`)
+      lines.push(`距上次唤醒: ${relativeTime(lastWake.time, now)} (${lastWake.activity})`)
     }
 
     const commitments = this.loadUpcomingCommitments()
@@ -60,16 +53,6 @@ export class TemporalLayer {
       this.lastSysCheck = now
     }
     return this.sysCache
-  }
-
-  private loadMood(): MoodState | null {
-    const path = join(this.dataDir, 'memory', 'mood.json')
-    if (!existsSync(path)) return null
-    try {
-      return JSON.parse(readFileSync(path, 'utf-8'))
-    } catch {
-      return null
-    }
   }
 
   private loadUpcomingCommitments(): string[] {

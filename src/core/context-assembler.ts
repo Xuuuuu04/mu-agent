@@ -74,7 +74,6 @@ export class ContextAssembler {
 
     // 第二段:时间/意识流/检索记忆/触发原因。每次都变,不标 cache。
     const temporalText = this.temporal.assemble(this.lastUserContact, this.lastWake)
-    const streamText = this.stream.assemble()
     const triggerText = formatTrigger(trigger)
 
     const now = new Date()
@@ -85,9 +84,6 @@ export class ContextAssembler {
       '',
       '--- 当前状态 ---',
       temporalText,
-      '',
-      '--- 意识流(你最近在做什么/想什么) ---',
-      streamText,
     ]
 
     if (this.episodic) {

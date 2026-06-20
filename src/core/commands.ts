@@ -118,17 +118,11 @@ function memoryText(deps: CommandDeps, query: string): string {
     const who = r.role === 'user' ? '你' : '我'
     lines.push(`[${t}] ${who}: ${r.content.slice(0, 50)}`)
   }
-  // 摘要和档案也搜(episodes 之外的两个召回盲区)
+  // 摘要也搜(episodes 之外的召回盲区)
   for (const s of deps.store.searchDailySummaries(query, 2)) {
     lines.push(`[${s.date} 摘要] ${s.summary.slice(0, 60)}`)
   }
-  for (const name of ['婷婷的事-哥哥给我的记录.md', '我们之间.md', '哥哥说过的.md']) {
-    const p = join(deps.dataDir, 'xiaomu-home', name)
-    if (!existsSync(p)) continue
-    const hit = readFileSync(p, 'utf-8').split('\n').find(l => l.trim() && l.includes(query))
-    if (hit) lines.push(`[档案] ${hit.trim().slice(0, 60)}`)
-  }
-  // 她的知识笔记(第四路,与 memory_search 工具同覆盖)
+  // 知识笔记(与 memory_search 工具同覆盖)
   for (const k of searchKnowledge(deps.dataDir, query).slice(0, 3)) {
     lines.push(`[笔记] ${k.slice(0, 80)}`)
   }

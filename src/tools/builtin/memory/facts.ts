@@ -1,5 +1,5 @@
-// 长期事实 CRUD:记住(save)/ 检索(search,四路)/ 更新(update)/ 忘掉(forget)。
-// 检索四路里第四路调 knowledge.searchKnowledge。
+// 长期事实 CRUD:记住(save)/ 检索(search,三路)/ 更新(update)/ 忘掉(forget)。
+// 检索:user-facts → episodes+日摘要 → knowledge 笔记。
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ToolDef } from '../../../core/types.js'
@@ -62,7 +62,7 @@ export const memorySearchTool: ToolDef = {
         out.push(out.length > 0 ? '\n[聊过的话和日记]' : '[聊过的话和日记]')
         for (const r of rows) {
           const date = r.timestamp.slice(0, 10)
-          const who = r.role === 'user' ? '哥哥' : r.role === 'assistant' ? '我' : ''
+          const who = r.role === 'user' ? '用户' : r.role === 'assistant' ? '我' : ''
           out.push(`[${date}]${who ? ` ${who}:` : ''} ${r.content.slice(0, 100).replace(/\n/g, ' ')}`)
         }
       }
@@ -74,22 +74,7 @@ export const memorySearchTool: ToolDef = {
       }
     }
 
-    // 第三路:重要档案(婷婷的事/我们之间/哥哥说过的)。这些在 xiaomu-home 里,
-    // 不进 episodes,以前任何检索都摸不到——"香港"这种关键事实就藏在这里
-    const archives = ['婷婷的事-哥哥给我的记录.md', '我们之间.md', '哥哥说过的.md', '近期记忆.md']
-    for (const name of archives) {
-      const p = join(ctx.dataDir, 'xiaomu-home', name)
-      if (!existsSync(p)) continue
-      const matched = readFileSync(p, 'utf-8').split('\n')
-        .filter(l => l.trim() && l.includes(query))
-      if (matched.length > 0) {
-        out.push(`\n[档案·${name.replace('.md', '')}]`)
-        out.push(...matched.slice(0, 3).map(l => l.trim().slice(0, 110)))
-      }
-    }
-
-    // 第四路:她自己的知识笔记(data/knowledge/ 270+ 篇)。identity 承诺"想起来会翻出来用",
-    // 但之前没有任何检索通路——笔记等于写进抽屉,聊到张居正想不起自己写过白银货币化
+    // 第三路:知识笔记(data/knowledge/)。聊到相关话题时把记过的笔记翻出来用
     const noted = searchKnowledge(ctx.dataDir, query)
     if (noted.length > 0) {
       out.push('\n[我的笔记]')
@@ -105,7 +90,7 @@ export const memorySearchTool: ToolDef = {
 
 export const memoryUpdateTool: ToolDef = {
   name: 'memory_update',
-  description: '更新一条已有的事实。比如哥哥换了手机号、改了计划,旧的记错了要改',
+  description: '更新一条已有的事实。比如用户换了手机号、改了计划,旧的记错了要改',
   parameters: {
     old: { type: 'string', description: '旧内容里的关键词(用来定位那条记忆)' },
     new: { type: 'string', description: '更新后的完整内容' },
@@ -136,7 +121,7 @@ export const memoryUpdateTool: ToolDef = {
 
 export const memoryForgetTool: ToolDef = {
   name: 'memory_forget',
-  description: '忘掉一条记忆。哥哥说"这个不用记了"时用',
+  description: '忘掉一条记忆。用户说"这个不用记了"时用',
   parameters: {
     key: { type: 'string', description: '要忘掉的记忆里的关键词' },
   },

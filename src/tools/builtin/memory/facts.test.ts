@@ -75,14 +75,6 @@ test('memory_search:大小写不敏感(query 小写命中大写内容)', () => w
   assert.ok(r.output.includes('CZ6309'))
 }))
 
-test('memory_search:第三路命中 xiaomu-home 档案,加 [档案·xxx] 表头', () => withCtx(async (ctx, dataDir) => {
-  mkdirSync(join(dataDir, 'xiaomu-home'), { recursive: true })
-  writeFileSync(join(dataDir, 'xiaomu-home', '我们之间.md'), '哥哥去过香港玩\n别的话', 'utf-8')
-  const r = await memorySearchTool.execute({ query: '香港' }, ctx)
-  assert.ok(r.output.includes('[档案·我们之间]'))
-  assert.ok(r.output.includes('香港'))
-}))
-
 test('memory_search:第四路命中 knowledge 标题,加 [我的笔记] 表头', () => withCtx(async (ctx, dataDir) => {
   mkdirSync(join(dataDir, 'knowledge'), { recursive: true })
   writeFileSync(join(dataDir, 'knowledge', '白银货币化.md'), '# 白银货币化\n张居正一条鞭法', 'utf-8')
@@ -111,7 +103,7 @@ test('memory_search:有 store 时走第二路 episodes,加 [聊过的话和日�
   } as unknown as ToolContext
   const r = await memorySearchTool.execute({ query: '爬山' }, ctx2)
   assert.ok(r.output.includes('[聊过的话和日记]'))
-  assert.ok(r.output.includes('哥哥:'))   // role=user 显示为"哥哥"
+  assert.ok(r.output.includes('用户:'))   // role=user 显示为"用户"
   assert.ok(r.output.includes('爬山'))
   void dataDir
 }))

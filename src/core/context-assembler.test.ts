@@ -91,9 +91,9 @@ test('块0 = identity + BEHAVIOR_RULES,且唯一带 cache_control:ephemeral', ()
     const block0 = r.system[0]!
     assert.deepEqual(block0.cache_control, { type: 'ephemeral' }, '块0 必须标 cache')
     assert.match(block0.text!, /我是沐的身份标记XYZ/, '块0 含 identity')
-    // BEHAVIOR_RULES 的稳定锚点(绝对规则段)
-    assert.match(block0.text!, /## 绝对规则/, '块0 含 BEHAVIOR_RULES')
-    assert.match(block0.text!, /## 自决唤醒/, '块0 含行为规则后段')
+    // BEHAVIOR_RULES 的稳定锚点
+    assert.match(block0.text!, /## 核心准则/, '块0 含 BEHAVIOR_RULES')
+    assert.match(block0.text!, /## 主动记忆/, '块0 含行为规则后段')
 
     // 只有块0 带 cache_control,后两块绝不带(否则记忆一变缓存全失效)
     assert.equal(r.system[1]!.cache_control, undefined, '块1 无 cache')
@@ -115,7 +115,7 @@ test('块1 = relations 事实,不带 cache_control', () =>
     const block1 = r.system[1]!
     assert.equal(block1.cache_control, undefined)
     assert.match(block1.text!, /哥哥喜欢喝奶茶FACT123/, '块1 含 user-facts')
-    assert.match(block1.text!, /关于哥哥/, '块1 是 relations 段')
+    assert.match(block1.text!, /关于用户/, '块1 是 relations 段')
     // relations 不该出现在块0/块2 里(顺序专属)
     assert.doesNotMatch(r.system[0]!.text!, /FACT123/)
     assert.doesNotMatch(r.system[2]!.text!, /FACT123/)
@@ -128,7 +128,7 @@ test('块1 在没有任何事实时退化为占位文案,仍是第二块且无 c
     const r = await a.assemble(msgTrigger, '在吗')
     const block1 = r.system[1]!
     assert.equal(block1.cache_control, undefined)
-    assert.match(block1.text!, /还没有记住关于哥哥的事实/)
+    assert.match(block1.text!, /还没有记住关于用户的事实/)
   }))
 
 test('块2 = 动态段:时间锚点 + 当前状态 + 意识流 + 唤醒原因,无 cache', () =>
@@ -140,7 +140,6 @@ test('块2 = 动态段:时间锚点 + 当前状态 + 意识流 + 唤醒原因,�
     assert.equal(block2.cache_control, undefined)
     assert.match(block2.text!, /\[时间锚点\]/, '动态段以时间锚点开头')
     assert.match(block2.text!, /--- 当前状态 ---/)
-    assert.match(block2.text!, /--- 意识流/)
     assert.match(block2.text!, /--- 本次唤醒原因 ---/)
     // message 触发 → 唤醒原因含发送者名
     assert.match(block2.text!, /收到哥哥的消息/)
@@ -222,8 +221,8 @@ test('setLastUserContact / setLastWake 进块2 的当前状态,不动块0/块1 c
     a.setLastUserContact(new Date(Date.now() - 3 * 3600_000))
     a.setLastWake(new Date(Date.now() - 600_000), 'reading')
     const r = await a.assemble(msgTrigger, '在吗')
-    assert.match(r.system[2]!.text!, /距上次和哥哥说话/)
-    assert.match(r.system[2]!.text!, /距上次自己醒来/)
+    assert.match(r.system[2]!.text!, /距上次和用户说话/)
+    assert.match(r.system[2]!.text!, /距上次唤醒/)
     assert.match(r.system[2]!.text!, /reading/)
     // cache 标记不受影响
     assert.deepEqual(r.system[0]!.cache_control, { type: 'ephemeral' })
@@ -235,6 +234,6 @@ test('identity 缺省:无 soul 文件时块0 用 DEFAULT_IDENTITY,仍带 cache',
     // soul 目录为空(没有 identity/style/values.md)
     const a = new ContextAssembler(makeConfig(soul, data))
     const r = await a.assemble(msgTrigger, '在吗')
-    assert.match(r.system[0]!.text!, /你是沐/, '退回 DEFAULT_IDENTITY')
+    assert.match(r.system[0]!.text!, /你是 Shion/, '退回 DEFAULT_IDENTITY')
     assert.deepEqual(r.system[0]!.cache_control, { type: 'ephemeral' })
   }))

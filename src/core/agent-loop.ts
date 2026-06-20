@@ -8,11 +8,10 @@ import type { Scheduler } from './scheduler.js'
 import type { MemoryConsolidation } from '../memory/consolidation.js'
 import { EmbeddingService } from '../memory/embedding.js'
 import { extractEntities } from '../memory/entities.js'
-import { updateMood } from '../memory/layers/mood.js'
 import { guardStyle } from '../soul/style-guard.js'
 import { log } from './logger.js'
 import { tryCommand } from './commands.js'
-import { extractMood, extractWakeDirective, extractStreamEntry, cleanResponse } from './loop/directives.js'
+import { cleanResponse } from './loop/directives.js'
 import { SessionStore } from './loop/session-store.js'
 
 export class AgentLoop {
@@ -287,7 +286,7 @@ export class AgentLoop {
         this.clearSession()
         this.consecutiveFailures = 0
         // 06-09 晚的死亡螺旋跑了 70 多分钟没人知道——出这种事必须有人收到信
-        this.sendOpsAlert(`[沐的系统] 连续 3 次没跑通,已自动清空会话自愈。最后的错: ${(err as Error).message.slice(0, 150)}`)
+        this.sendOpsAlert(`[Shion 系统] 连续 3 次没跑通,已自动清空会话自愈。最后的错: ${(err as Error).message.slice(0, 150)}`)
       }
       throw err
     } finally {
@@ -295,16 +294,8 @@ export class AgentLoop {
     }
   }
 
-  private async postProcess(response: string, trigger: WakeTrigger): Promise<void> {
-    // 顺序要紧：先在原文上抽指令（下面 extractMood/extractWakeDirective 依赖原文），
-    // 再用清洗后的文本写记忆/抽实体——否则 [WAKE]/[MOOD] 会污染长期记忆和实体表
-    const streamEntry = extractStreamEntry(response)
-    if (streamEntry) {
-      this.assembler.streamLayer.append(streamEntry.content, streamEntry.activity)
-    }
-
-    // style-guard 只挡发给用户的消息,自主 cycle 的内心独白没人挡,
-    // markdown 粗体曾直接进了长期记忆(9 条)——入库前统一清一遍
+  private async postProcess(response: string, _trigger: WakeTrigger): Promise<void> {
+    // 入库前清洗:自主 cycle 的内心独白没经过发送侧的处理,统一清一遍再存
     const rawCleaned = cleanResponse(response)
     const cleaned = rawCleaned ? guardStyle(rawCleaned).cleaned : ''
     if (cleaned) {
@@ -322,22 +313,9 @@ export class AgentLoop {
       })
     }
 
-    // agent 在回复里写了 [MOOD:情绪:原因] 就更新心情
-    const mood = extractMood(response)
-    if (mood) {
-      updateMood(this.config.paths.data, mood.mood, mood.reason)
-    }
-
-    const wakeDirective = extractWakeDirective(response)
-    if (wakeDirective && this.scheduler) {
-      this.scheduler.scheduleNext(wakeDirective)
-      this.assembler.setLastWake(new Date(), wakeDirective.activity_type)
-    } else if (this.scheduler && !this.scheduler.getStatus().sleeping) {
-      // BEHAVIOR_RULES 一直宣称"不写 [WAKE] 则使用默认间隔",但这个分支此前不存在:
-      // 消息打断闹钟后她忘写 [WAKE],就没有任何 pending wake,唤醒链全靠 cron 数小时后兜底。
-      // 默认 15 分钟(哥哥要求高频活跃,token 管够),clamp 会按夜间/困倦自动抬高
-      this.scheduler.scheduleNext({ seconds: 900, reason: '没定下次醒来,先按默认歇一会', activity_type: 'rest' })
-    }
+    // 专业助理被动响应:不解析 [MOOD]/[WAKE],也不自动给自己安排下次唤醒。
+    // 用户主动要的定时提醒走 schedule_wake 工具(在上面工具执行循环里调 scheduler.scheduleNext)。
+    // cron 仍在兜底:错过的 pending 提醒(scheduler 情况1)会被补唤醒。
 
     // 给还没算 embedding 的记忆补算(有 embedding 服务才做)
     await this.backfillEmbeddings()

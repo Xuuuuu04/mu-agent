@@ -8,7 +8,8 @@ import { ToolRegistry } from '../tools/registry.js'
 import type { MuConfig, WakeTrigger, ContentBlock, ToolDef } from './types.js'
 import type { ChatResponse } from '../providers/base.js'
 
-// runCycle 集成测试:mock router/assembler,验证完整 cycle 流(含死亡螺旋相关的末轮回退/默认唤醒)。
+// runCycle 集成测试:mock router/assembler,验证完整 cycle 流(含死亡螺旋相关的末轮回退)。
+// 专业助理被动响应:不自动安排唤醒,也不解析 [WAKE]/[MOOD] 指令。
 
 function minimalConfig(dataDir: string): MuConfig {
   return {
@@ -136,21 +137,21 @@ test('命令拦截:/help 零 token、不调 router', async () => {
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('postProcess:回复无 [WAKE] 且未睡 → 默认 900s(06-10 唤醒链兜底)', async () => {
+test('postProcess:回复无 [WAKE] → 不自动安排唤醒(被动响应)', async () => {
   const s = setup([textRes('就随便聊聊')])
   try {
     await s.loop.runCycle(userMsg('嗨'))
     await tick()   // postProcess 是 fire-and-forget,等它跑完
-    assert.ok(s.scheduler.scheduled.some(x => x.seconds === 900), '补了默认 900s')
+    assert.equal(s.scheduler.scheduled.length, 0, '不再补默认唤醒')
   } finally { s.cleanup() }
 })
 
-test('postProcess:回复带 [WAKE:600] → 按指令调度', async () => {
+test('postProcess:回复带 [WAKE:600] → 指令清掉但不据此调度', async () => {
   const s = setup([textRes('困了[WAKE:600:消化:rest]')])
   try {
     const r = await s.loop.runCycle(userMsg('晚安'))
-    assert.equal(r.response, '困了')   // 指令从回复里清掉
+    assert.equal(r.response, '困了')   // 指令仍从回复里清掉(cleanResponse)
     await tick()
-    assert.ok(s.scheduler.scheduled.some(x => x.seconds === 600 && x.reason === '消化'), '按 [WAKE] 调度')
+    assert.ok(!s.scheduler.scheduled.some(x => x.seconds === 600), '不再按 [WAKE] 自动调度')
   } finally { s.cleanup() }
 })

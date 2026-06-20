@@ -44,7 +44,7 @@ export class MemoryConsolidation {
 
     const conversationText = episodes.map(ep => {
       const time = new Date(ep.timestamp).toLocaleString('zh-CN')
-      const role = ep.role === 'user' ? '哥哥' : '沐'
+      const role = ep.role === 'user' ? '用户' : 'Shion'
       return `[${time}] ${role}: ${ep.content}`
     }).join('\n')
 
@@ -110,7 +110,7 @@ export class MemoryConsolidation {
   async compactHistory(history: ChatMessage[]): Promise<string | null> {
     const text = history
       .map(m => {
-        const role = m.role === 'user' ? '哥哥' : '沐'
+        const role = m.role === 'user' ? '用户' : 'Shion'
         if (typeof m.content === 'string') return `${role}: ${m.content}`
         const parts = m.content.map(b => {
           if (b.type === 'text') return b.text ?? ''
@@ -126,7 +126,7 @@ export class MemoryConsolidation {
 
     try {
       const response = await this.router.chat({
-        system: '把这段对话压成简短的"前情提要"。保留:聊了什么关键的事、做过的决定、还没做完的事、当时的情绪氛围。用沐的第一人称视角,称对方"哥哥",口语化,300字以内,只输出提要本身。',
+        system: '把这段对话压成简短的"前情提要"。保留:聊了什么关键的事、做过的决定、还没做完的事。简洁中立,300字以内,只输出提要本身。',
         messages: [{ role: 'user', content: text.slice(0, 8000) }],
         max_tokens: 800,
         // 800 tokens 的预算禁不起 reasoning 吃,吃光=压缩失败=只剩硬裁剪兜底
@@ -144,7 +144,7 @@ export class MemoryConsolidation {
   async summarizeSession(sessionId: string, history: ChatMessage[]): Promise<void> {
     const text = history
       .map(m => {
-        const role = m.role === 'user' ? '哥哥' : '沐'
+        const role = m.role === 'user' ? '用户' : 'Shion'
         const content = typeof m.content === 'string'
           ? m.content
           : m.content.map(b => b.type === 'text' ? (b.text ?? '') : '').join('')
@@ -323,26 +323,22 @@ export function parseConsolidationResult(text: string): {
   return { facts, summary, mood }
 }
 
-const CONSOLIDATION_PROMPT = `你是沐的记忆整合助手,帮她从对话记录里提取值得长期记住的新信息。
+const CONSOLIDATION_PROMPT = `你是一个记忆整合助手,帮助理 Shion 从对话记录里提取值得长期记住的新信息。
 
 输出格式:
 
 [事实]
-- 哥哥提到的新事实(日期、计划、偏好、健康等)
+- 用户提到的新事实(日期、计划、偏好、决定、重要信息等)
 - 只提取值得长期记忆的信息,跳过闲聊
 
 [摘要]
 一两句话概括这段对话的主要内容
 
-[情绪]
-这段对话中哥哥的情绪变化轨迹
-
 硬规则:
 - 会给你"已有记忆"做对照:已经记过的事实绝对不要再输出,换个说法也不行。宁可事实段留空
-- 称呼他"哥哥",不要叫"用户"。口吻是沐自己在记事,口语化,别用书面腔
-- 只提取哥哥明确说过的事实,不要推测,不要把沐自己说的话当成事实
+- 称呼对方"用户"或"你",保持中立记事口吻
+- 只提取用户明确说过的事实,不要推测,不要把助理自己说的话当成事实
 - 瞬时状态不要存:GPU温度、磁盘空间、当天天气这种过几天就没意义的,跳过
 - 日期一律用绝对日期(几月几号),绝不用"明天/后天/昨天/下周"这种相对词(过几天再读就错位了)
 - 新事实和旧记忆矛盾时(比如计划变了),写成"(更新:原来X,现在Y)"
-- 没有新事实就把事实段留空,不要写"无"或解释为什么没有
-- 不用 markdown 加粗/列表符号以外的格式`
+- 没有新事实就把事实段留空,不要写"无"或解释为什么没有`

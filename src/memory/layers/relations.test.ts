@@ -42,7 +42,7 @@ const mkCommit = (over: Partial<Commitment>): Commitment => ({
 test('assemble: 两个源都没有 → 兜底提示串', () => {
   withDataDir({}, (dir) => {
     const layer = new RelationsLayer(dir)
-    assert.equal(layer.assemble(), '(还没有记住关于哥哥的事实)')
+    assert.equal(layer.assemble(), '(还没有记住关于用户的事实)')
   })
 })
 
@@ -50,7 +50,7 @@ test('assemble: 只有 facts → 带标题注入', () => {
   withDataDir({ facts: '哥哥喜欢喝咖啡\n生日 5-27' }, (dir) => {
     const layer = new RelationsLayer(dir)
     const out = layer.assemble()
-    assert.match(out, /关于哥哥\(你记住的事实\)/)
+    assert.match(out, /关于用户\(你记住的事实\)/)
     assert.match(out, /喜欢喝咖啡/)
     assert.match(out, /生日 5-27/)
   })
@@ -60,7 +60,7 @@ test('loadFacts: 空白/全空格文件视为无事实', () => {
   withDataDir({ facts: '   \n  \n' }, (dir) => {
     const layer = new RelationsLayer(dir)
     // trim 后为空 → loadFacts 返回 null → 没承诺 → 兜底
-    assert.equal(layer.assemble(), '(还没有记住关于哥哥的事实)')
+    assert.equal(layer.assemble(), '(还没有记住关于用户的事实)')
   })
 })
 
