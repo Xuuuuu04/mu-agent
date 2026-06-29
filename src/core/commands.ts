@@ -4,6 +4,7 @@ import type { MemoryStore } from '../memory/store.js'
 import type { Scheduler } from './scheduler.js'
 import type { Commitment, MoodState } from './types.js'
 import { relativeTime } from '../memory/layers/temporal.js'
+import { loadTasks } from '../memory/active-tasks.js'
 
 export interface CommandDeps {
   dataDir: string
@@ -42,6 +43,8 @@ export function tryCommand(text: string, deps: CommandDeps): string | null {
       return moodText(deps)
     case 'todo': case 'commitments':
       return todoText(deps)
+    case 'tasks': case 'task':
+      return tasksText(deps)
     case 'memory': case 'mem':
       return memoryText(deps, parts.slice(1).join(' '))
     default:
@@ -56,6 +59,7 @@ function helpText(): string {
     '/status — 看我的状态(心情/记忆/下次醒)',
     '/mood — 我现在什么心情',
     '/todo — 答应你的事都在这',
+    '/tasks — 正在跟进的任务',
     '/memory 关键词 — 翻翻我记得的事',
     '/help — 就是这个',
   ].join('\n')
@@ -106,6 +110,17 @@ function todoText(deps: CommandDeps): string {
     return `- ${c.content}${tag}`
   })
   return '答应你的事:\n' + lines.join('\n')
+}
+
+// /tasks 列活跃 task(open/in_progress/in_review),区别于 /todo 的扁平承诺
+function tasksText(deps: CommandDeps): string {
+  const tasks = loadTasks(deps.dataDir).tasks.filter(t => t.status !== 'done' && t.status !== 'blocked')
+  if (tasks.length === 0) return '现在没有在跟进的任务'
+  const lines = tasks.map(t => {
+    const next = t.next_step ? ` → ${t.next_step}` : ''
+    return `- [${t.status}] ${t.title}${next} (${t.id})`
+  })
+  return '正在跟进的任务:\n' + lines.join('\n')
 }
 
 function memoryText(deps: CommandDeps, query: string): string {

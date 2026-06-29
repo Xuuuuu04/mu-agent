@@ -28,6 +28,9 @@ import {
 import { toolCreateTool } from './tools/builtin/tool-create.js'
 import { voiceSendTool } from './tools/builtin/voice-send.js'
 import { imageGenTool } from './tools/builtin/image-gen.js'
+import {
+  taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool,
+} from './tools/builtin/task.js'
 import { HotReloader } from './tools/hot-reload.js'
 import { McpManager } from './tools/mcp/manager.js'
 import { isCommandText } from './core/commands.js'
@@ -64,7 +67,8 @@ async function main() {
   for (const t of [fileReadTool, fileWriteTool, fileListTool, shellExecTool, webFetchTool, webSearchTool,
     messageSendTool, scheduleWakeTool, voiceSendTool, imageGenTool,
     memorySaveTool, memorySearchTool, memoryUpdateTool, memoryForgetTool, knowledgeWriteTool,
-    commitmentCreateTool, commitmentDoneTool, streamNoteTool, diaryWriteTool, toolCreateTool]) {
+    commitmentCreateTool, commitmentDoneTool, streamNoteTool, diaryWriteTool, toolCreateTool,
+    taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool]) {
     tools.register(t, { reserved: true })
   }
   console.log(`[init] ${tools.size} 个内置工具已注册`)

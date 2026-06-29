@@ -13,6 +13,15 @@ import { log } from './logger.js'
 import { tryCommand } from './commands.js'
 import { cleanResponse } from './loop/directives.js'
 import { SessionStore } from './loop/session-store.js'
+import {
+  loadTasks, pickNextWakeFromTasks, bumpWakeCount,
+  taskProgressSig, recordTaskProgress, blockCappedTasks, addNotifiedBlocked,
+  pendingBlockedNotices,
+} from '../memory/active-tasks.js'
+
+// task 续唤醒的 reason 前缀。getStatus().reason 据此区分"task 自唤醒"和"用户 schedule_wake 提醒"
+// (scheduler.ts 不暴露 activity_type,只能靠 reason)。task 唤醒可覆盖,用户提醒绝不覆盖。
+const TASK_WAKE_REASON_PREFIX = '推进任务 '
 
 export class AgentLoop {
   private config: MuConfig
@@ -149,8 +158,24 @@ export class AgentLoop {
       let lastSubstantive = ''   // 最近一轮去掉 WAKE/MOOD 指令后仍有内容的文本
 
       // cycle 时间预算:20 轮 × GLM 慢推理能跑半小时,期间哥哥的消息全在排队(失联感)。
-      // 哥哥在等的 cycle 5 分钟收尾;自主活动没人等,给 15 分钟做深度的事
-      const budgetMs = (trigger.type === 'message' ? 300 : 900) * 1000
+      // 哥哥在等的 cycle 5 分钟收尾;自主活动没人等,给 15 分钟做深度的事。
+      // 但自主推进 task 的 cycle(activity_type==='task')压到 5 分钟——别让单步占满拖慢续唤醒节奏。
+      const isTaskCycle = trigger.type === 'self_scheduled' && trigger.activity_type === 'task'
+      const budgetMs = (trigger.type === 'message' || isTaskCycle ? 300 : 900) * 1000
+
+      // 无进展检测的起点快照:task cycle 跑之前先记下该 task 的进展指纹,
+      // postProcess 里(scheduleTaskContinuation 之前)reload 比对,不变则 fail_streak++。
+      let taskProgressBaseline: { taskId: string; sig: string } | null = null
+      if (isTaskCycle && trigger.type === 'self_scheduled') {
+        const before = loadTasks(this.config.paths.data).tasks
+          .find(t => trigger.reason.includes(t.id))
+        if (before) taskProgressBaseline = { taskId: before.id, sig: taskProgressSig(before) }
+      }
+
+      // H2 去重基线:cycle 开头(= assemble 注入"告知用户"提示的同一时刻)就 blocked 且未告知的
+      // task id —— 正是本轮 assemble 注入了提示的那批。postProcess 只对这批落 notified_blocked,
+      // 不误标本轮 postProcess 才自动 block(assemble 已跑完、下轮才注入)的 task,否则永不告知。
+      const blockedNoticeBaseline = pendingBlockedNotices(loadTasks(this.config.paths.data)).map(t => t.id)
 
       while (turns < this.config.agent.max_turns_per_cycle) {
         if (turns > 0 && Date.now() - start > budgetMs) {
@@ -252,7 +277,7 @@ export class AgentLoop {
         finalText = directives ? `${lastSubstantive}\n${directives}` : lastSubstantive
       }
 
-      this.postProcess(finalText, trigger).catch(err =>
+      this.postProcess(finalText, trigger, taskProgressBaseline, blockedNoticeBaseline).catch(err =>
         console.error(`[post-process] ${(err as Error).message}`)
       )
 
@@ -294,7 +319,11 @@ export class AgentLoop {
     }
   }
 
-  private async postProcess(response: string, _trigger: WakeTrigger): Promise<void> {
+  private async postProcess(
+    response: string, _trigger: WakeTrigger,
+    taskProgressBaseline?: { taskId: string; sig: string } | null,
+    blockedNoticeBaseline: string[] = [],
+  ): Promise<void> {
     // 入库前清洗:自主 cycle 的内心独白没经过发送侧的处理,统一清一遍再存
     const rawCleaned = cleanResponse(response)
     const cleaned = rawCleaned ? guardStyle(rawCleaned).cleaned : ''
@@ -313,9 +342,15 @@ export class AgentLoop {
       })
     }
 
-    // 专业助理被动响应:不解析 [MOOD]/[WAKE],也不自动给自己安排下次唤醒。
-    // 用户主动要的定时提醒走 schedule_wake 工具(在上面工具执行循环里调 scheduler.scheduleNext)。
-    // cron 仍在兜底:错过的 pending 提醒(scheduler 情况1)会被补唤醒。
+    // 自主推进的状态收尾(只在成功路径跑,失败 cycle 走 catch 到不了这)。顺序有意为之:
+    //   1) 无进展检测:本轮 task 没动 → fail_streak++(驱动 backoff 翻倍);达 3 次自动 blocked。
+    //   2) wake_count 撞顶的 task 转 blocked(否则只是不再被 pick、status 没转)。
+    //   3) 已 blocked 且这轮已被注入"告知用户"提示的 task → 标记 notified,防下次重复注入(去重)。
+    //   4) 续唤醒(pickNextWakeFromTasks 已排除 blocked/到顶的,退避按更新后的 fail_streak)。
+    this.recordTaskProgressIfTask(taskProgressBaseline)
+    this.blockCappedAndDedupNotices(blockedNoticeBaseline)
+
+    this.scheduleTaskContinuation()
 
     // 给还没算 embedding 的记忆补算(有 embedding 服务才做)
     await this.backfillEmbeddings()
@@ -325,6 +360,66 @@ export class AgentLoop {
     }
 
     await this.session.maybeCompact(this.consolidation)
+  }
+
+  // H1:task cycle 无进展检测。fail_streak++/归0/达3自动 blocked 的逻辑在 active-tasks。
+  // 只在成功路径调;只对本轮确实跑了 task 的 cycle(有 baseline)生效。
+  private recordTaskProgressIfTask(baseline?: { taskId: string; sig: string } | null): void {
+    if (!baseline) return
+    recordTaskProgress(
+      this.config.paths.data, baseline.taskId, baseline.sig,
+      (msg) => console.log(`  [task-progress] ${msg}`),
+    )
+  }
+
+  // H2:wake_count 撞顶的 task 转 blocked + 对已 blocked 但本轮已注入告知提示的 task 标记 notified。
+  // context-assembler 注入"请告知用户一次"提示,这里在成功 cycle 后落 notified_blocked 去重,
+  // 保证同一 blocked task 的提示只注入一次(防刷屏的状态层硬保证,不靠模型纪律)。
+  private blockCappedAndDedupNotices(injectedNoticeIds: string[]): void {
+    const dataDir = this.config.paths.data
+    // wake_count 撞顶的 task 转 blocked(否则只是不再被 pick、status 没转)。
+    blockCappedTasks(dataDir, (msg) => console.log(`  [task-block] ${msg}`))
+    // 只对【本轮 assemble 实际注入过"告知用户"提示】的 task(cycle 开头就 blocked&未告知,见
+    // blockedNoticeBaseline)落 notified_blocked 去重。本轮 postProcess 才刚自动 block 的 task 不在
+    // 基线里 → 不标 → 下轮 assemble 注入提示后再标,否则永远不会告知用户。
+    for (const id of injectedNoticeIds) {
+      addNotifiedBlocked(dataDir, id, (msg) => console.log(`  [task-notify] ${msg}`))
+    }
+  }
+
+  // 自主推进的续唤醒(只在 cycle 成功后、postProcess 里调)。纯函数 pickNextWakeFromTasks
+  // 决定有没有可推进的 task:返回 null = 无 open task = 不排任何唤醒(退回纯被动)。
+  // 红线:bumpWakeCount 在排唤醒时 +1(挂掉的 cycle 计数照涨,MAX_WAKES_PER_TASK 物理封顶);
+  // 写盘失败 fail-closed(不排,cron 兜底接);绝不碰 trimHistory / 3 连败 / markActivity。
+  private scheduleTaskContinuation(): void {
+    if (!this.scheduler) return
+    const dataDir = this.config.paths.data
+    const pick = pickNextWakeFromTasks(loadTasks(dataDir).tasks, Date.now())
+    if (!pick) return // 无可推进 task,退回纯被动
+
+    const seconds = Math.max(0, Math.round((Date.parse(pick.wakeAt) - Date.now()) / 1000))
+
+    // M3:有 pending wake 时分两种——
+    //  - 用户提醒(reason 不是 task 唤醒前缀):绝不覆盖,task 这次让位,下个 cycle 再从
+    //    active-tasks.json 重新排(pickNextWakeFromTasks 每轮都能重推,零损失)。
+    //  - task 唤醒(reason 是 task 前缀):取两者最早,pending 更早或相等就不重排。
+    const status = this.scheduler.getStatus()
+    if (status.nextWake) {
+      const isPendingTaskWake = status.reason.startsWith(TASK_WAKE_REASON_PREFIX)
+      if (!isPendingTaskWake) return // 用户提醒优先,绝不覆盖
+      if (status.nextWake.getTime() <= Date.now() + seconds * 1000) return // 已排的 task 唤醒更早,不重排
+    }
+
+    // fail-closed:wake_count 落盘失败就不排这次(宁可不续,别在计数没落盘时绕过上限)。
+    if (!bumpWakeCount(dataDir, pick.taskId, (msg) => console.log(`  [task-wake] ${msg}`))) {
+      console.warn('[agent-loop] bumpWakeCount 写盘失败,本次不排续唤醒(cron 兜底接)')
+      return
+    }
+    this.scheduler.scheduleNext({
+      seconds,
+      reason: `${TASK_WAKE_REASON_PREFIX}${pick.taskId}`,
+      activity_type: 'task',
+    })
   }
 
   private async backfillEmbeddings(): Promise<void> {

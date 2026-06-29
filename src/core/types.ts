@@ -217,9 +217,57 @@ export interface Commitment {
   type: 'one-time' | 'recurring'
   schedule?: string
   due?: string
-  status: 'active' | 'done' | 'cancelled'
+  status: 'active' | 'done'
   created: string
   last_done?: string
+  // 自我 review 相关(commitment_done 前对照 DoD 审一遍)
+  definition_of_done?: string
+  review_status?: 'passed' | 'failed'  // failed = 撞 2 轮上界强制放行,留痕
+  review_rounds?: number               // 已自审轮数,上界 MAX_REVIEW_ROUNDS
+}
+
+// ── Task(多步骤、可 review、可跨多次自唤醒推进;区别于扁平的 Commitment)──
+// 写盘前所有含时间的字段(title/dod/steps[].text/next_step/due)过 absolutizeTime
+export type TaskStatus = 'open' | 'in_progress' | 'in_review' | 'blocked' | 'done'
+export type TaskStepStatus = 'todo' | 'doing' | 'done'
+export type ReviewVerdict = 'pass' | 'fail'
+
+export interface TaskStep {
+  id: string                  // `s${n}` task 内局部递增,稳定不复用
+  text: string
+  status: TaskStepStatus
+}
+
+export interface TaskReview {
+  at: string                  // ISO
+  verdict: ReviewVerdict
+  note: string                // 哪条 DoD 没满足 / 为什么过
+  by: 'self' | 'master'       // self-review pass 还是哥哥拍板
+  scores?: Record<string, number>  // D3 多维 rubric 打分(可选)
+}
+
+export interface Task {
+  id: string                  // `task_${Date.now().toString(36)}`
+  title: string
+  dod: string                 // 验收标准。空=未定义,进 in_review 前必须补
+  status: TaskStatus
+  source: { channel: 'wechat' | 'qq' | 'cli' | 'web' | 'self'; raw: string; at: string }
+  steps: TaskStep[]           // 子任务拆解,可空
+  deliverable?: string        // 产出物:文件路径/链接/结论文本
+  review: TaskReview[]        // append-only;最后一条 verdict 决定能否 done
+  // ── D2 有界控制字段(防自主循环失控,模型改不动)──
+  next_step: string           // 下一步干什么,每轮自唤醒更新
+  last_progress: string       // 给下次醒来当上下文
+  wake_count: number          // 已自动唤醒推进几次(硬上限 MAX_WAKES_PER_TASK)
+  fail_streak: number         // 连续"没进展"次数,驱动 backoff
+  next_wake_at: string | null // 这个 task 的下次自唤醒绝对时刻
+  blocked_reason: string | null
+  created: string             // YYYY-MM-DD
+  updated: string             // ISO
+  due?: string                // YYYY-MM-DD
+  // 自我 review 相关(置 done 前对照 DoD 审一遍,上界 MAX_REVIEW_ROUNDS 轮)
+  review_rounds?: number      // 已自审轮数
+  review_status?: 'passed' | 'failed'  // failed = 撞上界强制放行,留痕
 }
 
 export interface AssembledContext {

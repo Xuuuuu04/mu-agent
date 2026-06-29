@@ -81,7 +81,8 @@ test('commitments: 只装配 status===active 的', () => {
     commitments: [
       mkCommit({ id: 'a', content: '活跃承诺', status: 'active' }),
       mkCommit({ id: 'b', content: '完成承诺', status: 'done' }),
-      mkCommit({ id: 'c', content: '取消承诺', status: 'cancelled' }),
+      // 老数据可能残留已废弃的 cancelled 状态;runtime 只装配 active,这类一律过滤掉
+      mkCommit({ id: 'c', content: '取消承诺', status: 'cancelled' as Commitment['status'] }),
     ],
   }, (dir) => {
     const layer = new RelationsLayer(dir)

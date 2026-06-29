@@ -37,6 +37,7 @@ export class AdminApi {
         case '/api/episodes': this.handleEpisodes(res, params); return true
         case '/api/outbox': this.handleOutbox(res, params); return true
         case '/api/commitments': this.handleCommitments(res); return true
+        case '/api/todos': this.handleTodos(res); return true
         case '/api/mood': this.handleMood(res); return true
         case '/api/tools': this.handleTools(res); return true
         case '/api/logs': this.handleLogs(res, params); return true
@@ -83,6 +84,12 @@ export class AdminApi {
 
   private handleCommitments(res: ServerResponse): void {
     sendJson(res, { commitments: this.readJsonFile('memory/commitments.json') ?? [] })
+  }
+
+  // 只读返回 active-tasks.json 的任务列表(Task 系统)
+  private handleTodos(res: ServerResponse): void {
+    const data = this.readJsonFile('memory/active-tasks.json') as { tasks?: unknown[] } | null
+    sendJson(res, { tasks: Array.isArray(data?.tasks) ? data!.tasks : [] })
   }
 
   private handleMood(res: ServerResponse): void {

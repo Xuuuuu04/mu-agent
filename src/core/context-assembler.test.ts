@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ContextAssembler } from './context-assembler.js'
-import type { MuConfig, WakeTrigger, AnthropicTool, IncomingMessage } from './types.js'
+import type { MuConfig, WakeTrigger, AnthropicTool, IncomingMessage, Task } from './types.js'
 
 // characterization 测试:锁住 assemble() 产出的 system 块顺序与 cache_control 标记。
 // 这是头号成本雷区——cache 前缀顺序错了缓存全失效。测真实行为,不测应然。
@@ -236,4 +236,142 @@ test('identity 缺省:无 soul 文件时块0 用 DEFAULT_IDENTITY,仍带 cache',
     const r = await a.assemble(msgTrigger, '在吗')
     assert.match(r.system[0]!.text!, /你是 Shion/, '退回 DEFAULT_IDENTITY')
     assert.deepEqual(r.system[0]!.cache_control, { type: 'ephemeral' })
+  }))
+
+// ── Phase 2: Task 注入(按 trigger 分流,只读 active-tasks.json,放块2 动态段不击穿缓存)──
+
+function mkTask(over: Partial<Task> = {}): Task {
+  return {
+    id: 'task_t1',
+    title: '调研三个向量库',
+    dod: '产出对比表',
+    status: 'open',
+    source: { channel: 'cli', raw: 'r', at: '2026-06-29T00:00:00.000Z' },
+    steps: [{ id: 's1', text: '列候选', status: 'todo' }],
+    review: [],
+    next_step: '先列候选库',
+    last_progress: '',
+    wake_count: 0,
+    fail_streak: 0,
+    next_wake_at: null,
+    blocked_reason: null,
+    created: '2026-06-29',
+    updated: '2026-06-29T00:00:00.000Z',
+    ...over,
+  }
+}
+
+function writeTasks(data: string, tasks: Task[], notifiedBlocked: string[] = []): void {
+  writeFileSync(
+    join(data, 'memory', 'active-tasks.json'),
+    JSON.stringify({ tasks, notified_blocked: notifiedBlocked }),
+    'utf-8',
+  )
+}
+
+test('self_scheduled 且 reason 含 task id → 块2 注入该 task 全文', () =>
+  withDirs(async ({ soul, data }) => {
+    writeTasks(data, [mkTask({ id: 'task_abc', title: '写周报XYZ', next_step: '汇总三个项目PROG' })])
+    const a = new ContextAssembler(makeConfig(soul, data))
+    const r = await a.assemble({ type: 'self_scheduled', reason: '推进任务 task_abc', activity_type: 'task' })
+    assert.equal(r.system.length, 3, '注入不增块')
+    const dyn = r.system[2]!.text!
+    assert.match(dyn, /当前要推进的任务/)
+    assert.match(dyn, /写周报XYZ/, '注入了 title')
+    assert.match(dyn, /汇总三个项目PROG/, '注入了 next_step')
+    assert.equal(r.system[2]!.cache_control, undefined, '块2 仍无 cache')
+    assert.deepEqual(r.system[0]!.cache_control, { type: 'ephemeral' }, 'cache 前缀不变')
+  }))
+
+test('self_scheduled 但 reason 不含任何 task id → 不注入 task 全文', () =>
+  withDirs(async ({ soul, data }) => {
+    writeTasks(data, [mkTask({ id: 'task_abc', title: '写周报XYZ' })])
+    const a = new ContextAssembler(makeConfig(soul, data))
+    const r = await a.assemble({ type: 'self_scheduled', reason: '随便看看', activity_type: 'rest' })
+    assert.doesNotMatch(r.system[2]!.text!, /当前要推进的任务/)
+    assert.doesNotMatch(r.system[2]!.text!, /写周报XYZ/)
+  }))
+
+test('cron_fallback → 块2 注入全部 open task 一行摘要', () =>
+  withDirs(async ({ soul, data }) => {
+    writeTasks(data, [
+      mkTask({ id: 'task_1', title: '任务一AAA', status: 'open' }),
+      mkTask({ id: 'task_2', title: '任务二BBB', status: 'in_progress' }),
+      mkTask({ id: 'task_3', title: '已完成CCC', status: 'done' }),
+      mkTask({ id: 'task_4', title: '卡住DDD', status: 'blocked', blocked_reason: 'x' }),
+    ], ['task_4']) // task_4 已告知用户,不再注入 blocked 提示,本测专测 open 摘要过滤
+    const a = new ContextAssembler(makeConfig(soul, data))
+    const r = await a.assemble({ type: 'cron_fallback', reason: '兜底' })
+    const dyn = r.system[2]!.text!
+    assert.match(dyn, /进行中的任务/)
+    assert.match(dyn, /任务一AAA/, 'open 进摘要')
+    assert.match(dyn, /任务二BBB/, 'in_progress 进摘要')
+    assert.doesNotMatch(dyn, /已完成CCC/, 'done 不进摘要')
+    assert.doesNotMatch(dyn, /卡住DDD/, 'blocked 不进摘要(且已 notified 不注入提示)')
+    assert.equal(r.system.length, 3)
+  }))
+
+test('message 触发 → 块2 只注入"你有 N 个进行中任务"一行(不展开)', () =>
+  withDirs(async ({ soul, data }) => {
+    writeTasks(data, [
+      mkTask({ id: 'task_1', title: '细节标题不该出现SECRET', status: 'open' }),
+      mkTask({ id: 'task_2', title: '另一个', status: 'in_progress' }),
+    ])
+    const a = new ContextAssembler(makeConfig(soul, data))
+    const r = await a.assemble(msgTrigger, '在吗')
+    const dyn = r.system[2]!.text!
+    assert.match(dyn, /你有 2 个进行中任务/)
+    assert.doesNotMatch(dyn, /SECRET/, 'message 触发不展开 task 详情')
+  }))
+
+test('无 open task:三种 trigger 都不注入任何 task 文案(退回纯被动)', () =>
+  withDirs(async ({ soul, data }) => {
+    // 全是 done/blocked,没有 open/in_progress
+    writeTasks(data, [mkTask({ id: 'task_d', status: 'done' }), mkTask({ id: 'task_b', status: 'blocked' })])
+    const a = new ContextAssembler(makeConfig(soul, data))
+    for (const trig of [
+      msgTrigger,
+      { type: 'cron_fallback', reason: 'x' } as WakeTrigger,
+      { type: 'self_scheduled', reason: '推进任务 task_d', activity_type: 'task' } as WakeTrigger,
+    ]) {
+      const r = await a.assemble(trig, '在吗')
+      const dyn = r.system[2]!.text!
+      assert.doesNotMatch(dyn, /进行中的任务/, `${trig.type} 无 open task 不注入摘要`)
+      assert.doesNotMatch(dyn, /个进行中任务/, `${trig.type} 无 open task 不注入计数`)
+      assert.doesNotMatch(dyn, /当前要推进的任务/, `${trig.type} done 的 task 不注入全文`)
+    }
+  }))
+
+test('active-tasks.json 不存在:assemble 不崩,块2 无 task 文案', () =>
+  withDirs(async ({ soul, data }) => {
+    // 不写 active-tasks.json
+    const a = new ContextAssembler(makeConfig(soul, data))
+    const r = await a.assemble(msgTrigger, '在吗')
+    assert.equal(r.system.length, 3)
+    assert.doesNotMatch(r.system[2]!.text!, /进行中任务/)
+  }))
+
+// ── H2: blocked task 一次性告知用户(notified_blocked 去重)──
+
+test('H2:blocked 且未 notified → 块2 注入"请告知用户"提示,不增块、不击穿 cache', () =>
+  withDirs(async ({ soul, data }) => {
+    writeTasks(data, [mkTask({ id: 'task_blk', title: '调研XX', status: 'blocked', blocked_reason: '达上限BLKR' })])
+    const a = new ContextAssembler(makeConfig(soul, data))
+    const r = await a.assemble(msgTrigger, '在吗')
+    const dyn = r.system[2]!.text!
+    assert.match(dyn, /需要告知用户的挂起任务/)
+    assert.match(dyn, /task_blk/)
+    assert.match(dyn, /达上限BLKR/, '注入了 blocked_reason')
+    assert.match(dyn, /message_send/, '提示用 message_send 告知')
+    assert.equal(r.system.length, 3, '注入不增块')
+    assert.deepEqual(r.system[0]!.cache_control, { type: 'ephemeral' }, 'cache 前缀不变')
+    assert.equal(r.system[2]!.cache_control, undefined, '块2 仍无 cache')
+  }))
+
+test('H2:blocked 且已 notified → 不再注入提示(去重)', () =>
+  withDirs(async ({ soul, data }) => {
+    writeTasks(data, [mkTask({ id: 'task_blk', title: '调研XX', status: 'blocked', blocked_reason: 'x' })], ['task_blk'])
+    const a = new ContextAssembler(makeConfig(soul, data))
+    const r = await a.assemble(msgTrigger, '在吗')
+    assert.doesNotMatch(r.system[2]!.text!, /需要告知用户的挂起任务/, '已 notified 不重复注入')
   }))
