@@ -6,7 +6,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from bridge_pure import (  # noqa: E402
     split_reply_chunks, is_authorized, extract_image_urls,
-    ask_payload, is_delivered, build_c2c_body, Dedup,
+    ask_payload, build_c2c_body, Dedup,
 )
 
 
@@ -83,16 +83,6 @@ class TestAskPayload(unittest.TestCase):
             ask_payload("在吗", "uid", "qq"),
             {"text": "在吗", "sender_name": "哥哥", "sender_id": "uid", "source": "qq"},
         )
-
-
-class TestIsDelivered(unittest.TestCase):
-    def test_has_token_delivered(self):
-        self.assertTrue(is_delivered({"context_token": "abc", "errcode": 0}))
-
-    def test_no_token_not_delivered(self):
-        self.assertFalse(is_delivered({"errcode": 0}))      # errcode 0 也不算
-        self.assertFalse(is_delivered({"context_token": ""}))
-        self.assertFalse(is_delivered(None))
 
 
 class TestDedup(unittest.TestCase):

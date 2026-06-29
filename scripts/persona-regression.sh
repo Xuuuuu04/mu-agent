@@ -5,9 +5,11 @@
 # --full 额外跑 5 个 LLM 场景(烧 token!且测试前自动备份记忆、测试后自动还原+清理痕迹)。
 # 每次大改 soul/BEHAVIOR_RULES/记忆系统之后跑一遍,对照上次结果看有没有退化。
 set -e
+# 路径派生自脚本位置(可移植:xpark/aliyun/本地都对),不再写死 /home/xpark
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MU=http://127.0.0.1:3210
-DB=/home/xpark/mu/data/mu.db
-MEM=/home/xpark/mu/data/memory
+DB="$REPO_DIR/data/mu.db"
+MEM="$REPO_DIR/data/memory"
 
 ask() {
   curl -s -m 115 -X POST $MU/webhook/message -H "Content-Type: application/json" \

@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """沐的微信 bridge。
 
-复用 hermes 的 ilinkai 实现(gateway.platforms.weixin 的模块级函数),
-不重写 2343 行的加密/反作弊/context_token 逻辑。两条链路:
-  被动: long-poll ilinkai 收消息 → POST 沐的 webhook → 沐回复 → 发回微信
-  主动: 沐的 message_send → POST 本 bridge 的 /send → 发给最近对话的哥哥
+复用 hermes 的 ilinkai 实现:
+  收消息走低层模块函数(_get_updates 等);
+  发消息委托 WeixinAdapter.send(分块/块间节奏/context_token 流/stale 降级/rate-limit
+  重试全在它内部),不再自写发送循环。
+两条链路:
+  被动: long-poll ilinkai 收消息 → POST 沐的 webhook → 沐回复 → adapter.send 发回微信
+  主动: 沐的 message_send → POST 本 bridge 的 /send → adapter.send 发给最近对话的哥哥
 
-必须用 hermes 的 venv python 跑(自带 aiohttp + gateway 包):
-  /home/xpark/ai/venvs/hermes/bin/python wechat_bridge.py [check]
+必须用 hermes 的 venv python 跑(自带 aiohttp + gateway 包)。
+对标 vanilla Hermes 0.17 的发送链路(已实测 0.17 投递可靠,0.14 被 iLink 静默吞):
+  /home/jump/hermes-vanilla/bin/python wechat_bridge.py [check]
 
 凭据从环境变量读(见 config/wechat.env):
-  WEIXIN_ACCOUNT_ID / WEIXIN_TOKEN / WEIXIN_BASE_URL
+  WEIXIN_ACCOUNT_ID / WEIXIN_TOKEN / WEIXIN_BASE_URL (WEIXIN_CDN_BASE_URL 可选,发图用)
 """
 import asyncio
 import builtins as _builtins
@@ -20,7 +24,7 @@ import sys
 import urllib.request
 from datetime import datetime as _dt
 
-from bridge_pure import is_authorized, ask_payload, is_delivered
+from bridge_pure import is_authorized, ask_payload
 
 
 def print(*args, **kw):  # noqa: A001 —— 全文件日志统一带时间戳(06-10 排查降级时无时间戳吃过亏)
@@ -28,16 +32,17 @@ def print(*args, **kw):  # noqa: A001 —— 全文件日志统一带时间戳(0
 
 HERMES_SP = os.environ.get(
     "HERMES_SITE_PACKAGES",
-    "/home/xpark/ai/venvs/hermes/lib/python3.12/site-packages",
+    "/home/jump/hermes-vanilla/lib/python3.12/site-packages",
 )
 if HERMES_SP not in sys.path:
     sys.path.insert(0, HERMES_SP)
 
 import aiohttp  # noqa: E402
 from aiohttp import web  # noqa: E402
+from gateway.config import PlatformConfig  # noqa: E402
 from gateway.platforms.weixin import (  # noqa: E402
+    WeixinAdapter,
     _get_updates,
-    _send_message,
     _send_typing,
     _get_config,
     _extract_text,
@@ -47,6 +52,8 @@ from gateway.platforms.weixin import (  # noqa: E402
     ContextTokenStore,
     ILINK_BASE_URL,
     LONG_POLL_TIMEOUT_MS,
+    WEIXIN_CDN_BASE_URL,
+    _LIVE_ADAPTERS,
 )
 
 # 每个 peer 的 typing_ticket 缓存(发"正在输入"用)
@@ -59,16 +66,51 @@ TOKEN = os.environ.get("WEIXIN_TOKEN", "").strip()
 # 主人白名单:设了就只理这个 user_id,陌生人消息直接忽略(防隐私泄露+记忆污染)
 MASTER_ID = os.environ.get("WEIXIN_MASTER_ID", "").strip()
 BASE_URL = os.environ.get("WEIXIN_BASE_URL", ILINK_BASE_URL).strip().rstrip("/")
-HOME = os.environ.get("MU_WECHAT_HOME", "/home/xpark/mu/data/wechat")
+HOME = os.environ.get("MU_WECHAT_HOME", "/home/jump/mu/data/wechat")
+
+# 发送侧的分块/节奏/重试/stale 降级全部交给 WeixinAdapter.send 内部处理
+# (它读 WEIXIN_SEND_CHUNK_* 等 env 自调),这里不再自写发送循环。
+CDN_BASE_URL = os.environ.get("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL).strip().rstrip("/")
 
 os.makedirs(os.path.join(HOME, "weixin-accounts"), exist_ok=True)
 
+# adapter 和 bridge 共用同一个 token_store —— inbound 存进来的 ctx,adapter.send 才取得到
 _tokens = ContextTokenStore(HOME)
 _tokens.restore(ACCOUNT_ID)
 
 # 最近和沐说话的人,沐主动发消息时发给他。持久化,重启恢复。
 _PEER_FILE = os.path.join(HOME, "last_peer.txt")
 _send_session: "aiohttp.ClientSession | None" = None
+# 进程级单例:整个进程复用一个 adapter + 一条持久 send_session(解决"连接非持久")
+_adapter: "WeixinAdapter | None" = None
+
+
+def _build_adapter(session: "aiohttp.ClientSession") -> "WeixinAdapter":
+    """照 send_weixin_direct(weixin.py:2260)的模式裸实例化 WeixinAdapter。
+
+    不走 adapter.connect() 的 long-poll 生命周期(收消息我们用低层 _get_updates),
+    只借它成熟的 send():内部已做智能分块 + 块间节奏 + context_token 流 + stale 降级
+    + rate-limit 重试。手动设好它发送所需的内部属性。
+    """
+    adapter = WeixinAdapter(
+        PlatformConfig(
+            enabled=True,
+            token=TOKEN,
+            extra={
+                "account_id": ACCOUNT_ID,
+                "base_url": BASE_URL,
+                "cdn_base_url": CDN_BASE_URL,
+            },
+        )
+    )
+    adapter._send_session = session
+    adapter._session = session
+    adapter._token = TOKEN
+    adapter._account_id = ACCOUNT_ID
+    adapter._base_url = BASE_URL
+    adapter._cdn_base_url = CDN_BASE_URL
+    adapter._token_store = _tokens  # 和 bridge 共用,inbound 存的 ctx 这里取得到
+    return adapter
 
 
 def _load_peer() -> "str | None":
@@ -85,6 +127,25 @@ def _save_peer(p: str) -> None:
         pass
 
 
+# bridge 侧最小 outbox:发送 retry 仍失败时落盘,回复绝不静默蒸发。
+# 不复用 mu 主链路的 data/memory/outbox.json(那个由 mu 进程独占读写,跨进程并发写有损坏风险)。
+_OUTBOX_FILE = os.path.join(HOME, "outbox.json")
+
+
+def _outbox_append(peer: str, text: str, error: str) -> None:
+    try:
+        items = []
+        if os.path.exists(_OUTBOX_FILE):
+            with open(_OUTBOX_FILE, encoding="utf-8") as f:
+                items = json.load(f) or []
+        items.append({"to": peer, "text": text, "error": error, "ts": _dt.now().isoformat()})
+        items = items[-50:]  # 上限 50,丢最旧
+        with open(_OUTBOX_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[wechat-bridge] outbox 落盘失败: {exc}", flush=True)
+
+
 _last_peer = _load_peer()
 
 
@@ -99,24 +160,28 @@ def _ask_mu(text: str, sender: str) -> str:
         return ""
 
 
-async def _send_to(peer: str, text: str, context_token: "str | None" = None) -> dict:
-    """发消息给 peer。必须带该 peer 最新的 context_token。
+async def _send_text(peer: str, text: str):
+    """发文本给 peer,委托 WeixinAdapter.send。
 
-    关键(issue #35949 + 官方文档):缺 token 或 token stale 时,iLink 返回 HTTP 200
-    但【静默丢弃】——不投递给用户、也不返回新 context_token。所以:
-      - 不做 tokenless 重试(去掉 token 只会发进虚空,errcode 0 也收不到)
-      - 投递成功的标志是【返回里带新 context_token】,不是 errcode==0
+    adapter.send 内部已处理:智能分块 + 块间节奏 + 取/更新 context_token(从共用的
+    _token_store)+ stale 降级 + rate-limit 重试。我们只负责 format + 判 success。
+    返回 (success_bool, error_str)。
     """
-    assert _send_session is not None
-    ctx = context_token or _tokens.get(ACCOUNT_ID, peer) or None
-    result = (await _send_message(
-        _send_session, base_url=BASE_URL, token=TOKEN, to=peer, text=text,
-        context_token=ctx, client_id=ACCOUNT_ID,
-    )) or {}
-    new_ctx = str(result.get("context_token") or "").strip()
-    if new_ctx:
-        _tokens.set(ACCOUNT_ID, peer, new_ctx)
-    return result
+    assert _adapter is not None
+    cleaned = _adapter.format_message(text)
+    if not cleaned:
+        return False, "empty after format"  # 清成空串 ≠ 投递成功,别打 ✓
+    result = await _adapter.send(peer, cleaned)
+    if result is None:  # send 内部异常路径可能返回 None,别让 result.success 抛 AttributeError
+        return False, "send returned None"
+    return bool(result.success), result.error
+
+
+async def _send_image(peer: str, path: str):
+    """发图片给 peer,委托 WeixinAdapter.send_image_file。返回 (success_bool, error_str)。"""
+    assert _adapter is not None
+    result = await _adapter.send_image_file(peer, path)
+    return bool(result.success), result.error
 
 
 async def _typing(peer: str, context_token: "str | None", status: int):
@@ -186,17 +251,27 @@ async def _handle(msg):
         await _typing(sender, ctx or None, 0)  # 停"正在输入"
     if not reply:
         return
-    # 微信侧不拆条,整条发。曾按空行拆最多 3 段(像真人连发)——06-10 03:49 上线,
-    # 当天 03:13 后账号即被风控降级:typing 能过、正文全部静默扣下(errcode=0 且
-    # 照常返新 token,协议层完全无感),9 小时+全部回复不可见。单条是降级前
-    # 最后一条送达的形态。"真人感"不值得拿整个通道的可用性去换;
-    # QQ 官方 bot 无此风控,拆条保留在 qq_bridge
-    result = await _send_to(sender, reply, context_token=ctx or None)
-    ec = result.get("errcode", 0)
-    print(f"[wechat-bridge] 回复 {sender[:8]} errcode={ec}", flush=True)
+    # 发送委托 WeixinAdapter.send(分块/块间节奏/context_token 流/stale 降级/rate-limit
+    # 重试全在它内部)。inbound 的 ctx 已存进共用 _token_store,adapter 自己取最新。
+    # _handle 是 detached task(create_task),poll 循环的 except 捕不到这里的 raise,
+    # 所以发送必须自己兜底:retry 一次 → 仍失败落 outbox,绝不让异常逃出、回复绝不静默蒸发。
+    ok, err = False, None
+    for attempt in (1, 2):
+        try:
+            ok, err = await _send_text(sender, reply)
+            if ok:
+                print(f"[wechat-bridge] 回复 {sender[:8]} 投递✓ ({len(reply)}字符)", flush=True)
+                break
+            print(f"[wechat-bridge] 回复 {sender[:8]} ⚠未投递(第{attempt}次): {err}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            ok, err = False, str(exc)
+            print(f"[wechat-bridge] 回复 {sender[:8]} ⚠发送抛异常(第{attempt}次): {exc}", flush=True)
+    if not ok:
+        _outbox_append(sender, reply, str(err))
+        print(f"[wechat-bridge] 回复 {sender[:8]} ⚠两次都没出去,已落 outbox: {err}", flush=True)
 
 
-# 沐主动消息走这里:POST /send {text} → 发给最近对话的哥哥
+# 沐主动消息走这里:POST /send {text, image_path?} → 发给最近对话的哥哥
 async def _http_send(request: "web.Request") -> "web.Response":
     try:
         data = await request.json()
@@ -208,13 +283,15 @@ async def _http_send(request: "web.Request") -> "web.Response":
     peer = str(data.get("to") or "").strip() or _last_peer
     if not peer:
         return web.json_response({"error": "还没有人和沐说过话,不知道发给谁"}, status=409)
+    image_path = str(data.get("image_path") or "").strip()
     try:
-        result = await _send_to(peer, text)
-        ec = result.get("errcode", 0)
-        delivered = is_delivered(result)  # 返新 token 才算真投递
-        flag = "投递✓" if delivered else "⚠未投递(主动推送遇 stale token,issue#35949 的硬限制)"
-        print(f"[wechat-bridge] 主动发给 {peer[:8]}: {text[:30]} errcode={ec} {flag}", flush=True)
-        return web.json_response({"ok": delivered, "to": peer, "errcode": ec, "delivered": delivered})
+        ok, err = await _send_text(peer, text)
+        if ok and image_path:
+            img_ok, img_err = await _send_image(peer, image_path)
+            ok, err = (ok and img_ok), (err or img_err)
+        flag = "投递✓" if ok else f"⚠未投递: {err}"
+        print(f"[wechat-bridge] 主动发给 {peer[:8]}: {text[:30]} {flag}", flush=True)
+        return web.json_response({"ok": ok, "to": peer, "delivered": ok, "error": err})
     except Exception as exc:  # noqa: BLE001
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -229,8 +306,20 @@ async def _poll_once() -> bool:
 
 
 async def _run():
-    global _send_session
-    _send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+    global _send_session, _adapter
+    # 进程级持久 session:发送 + long-poll + typing 全复用这一条(解决"连接非持久")。
+    # timeout=None 对标 WeixinAdapter.connect(weixin.py:1292):禁用 aiohttp 内置
+    # ClientTimeout,超时由 _api_post/_api_get 内部的 asyncio.wait_for 单独管;否则
+    # 35s long-poll 会撞上 aiohttp 默认 5min total 之外的 sock_read 限制。
+    _no_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
+    _send_session = aiohttp.ClientSession(
+        trust_env=True, connector=_make_ssl_connector(), timeout=_no_timeout,
+    )
+    _adapter = _build_adapter(_send_session)
+    # 注册到 live adapter 表(对标 connect:1296):若进程内别处走 send_weixin_direct,
+    # 它会复用我们这条持久 session + 共享 token_store,而非另开临时连接。
+    if TOKEN:
+        _LIVE_ADAPTERS[TOKEN] = _adapter
 
     # 主动发送的 HTTP server
     app = web.Application()
@@ -243,30 +332,29 @@ async def _run():
 
     sync_buf = _load_sync_buf(HOME, ACCOUNT_ID)
     print(f"[wechat-bridge] 启动 long-poll, account={ACCOUNT_ID[:8]} last_peer={(_last_peer or '无')[:8]}", flush=True)
-    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as poll_s:
-        fails = 0
-        while True:
-            try:
-                resp = await _get_updates(poll_s, base_url=BASE_URL, token=TOKEN, sync_buf=sync_buf, timeout_ms=LONG_POLL_TIMEOUT_MS)
-                ret, ec = resp.get("ret", 0), resp.get("errcode", 0)
-                if ret not in (0, None) or ec not in (0, None):
-                    fails += 1
-                    print(f"[wechat-bridge] poll err ret={ret} errcode={ec} ({fails})", flush=True)
-                    await asyncio.sleep(10 if fails >= 3 else 3)
-                    continue
-                fails = 0
-                nb = str(resp.get("get_updates_buf") or "")
-                if nb:
-                    sync_buf = nb
-                    _save_sync_buf(HOME, ACCOUNT_ID, sync_buf)
-                for m in resp.get("msgs") or []:
-                    asyncio.create_task(_handle(m))
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:  # noqa: BLE001
+    fails = 0
+    while True:
+        try:
+            resp = await _get_updates(_send_session, base_url=BASE_URL, token=TOKEN, sync_buf=sync_buf, timeout_ms=LONG_POLL_TIMEOUT_MS)
+            ret, ec = resp.get("ret", 0), resp.get("errcode", 0)
+            if ret not in (0, None) or ec not in (0, None):
                 fails += 1
-                print(f"[wechat-bridge] 循环异常 ({fails}): {exc}", flush=True)
+                print(f"[wechat-bridge] poll err ret={ret} errcode={ec} ({fails})", flush=True)
                 await asyncio.sleep(10 if fails >= 3 else 3)
+                continue
+            fails = 0
+            nb = str(resp.get("get_updates_buf") or "")
+            if nb:
+                sync_buf = nb
+                _save_sync_buf(HOME, ACCOUNT_ID, sync_buf)
+            for m in resp.get("msgs") or []:
+                asyncio.create_task(_handle(m))
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:  # noqa: BLE001
+            fails += 1
+            print(f"[wechat-bridge] 循环异常 ({fails}): {exc}", flush=True)
+            await asyncio.sleep(10 if fails >= 3 else 3)
 
 
 def main():

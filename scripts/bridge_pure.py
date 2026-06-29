@@ -38,12 +38,6 @@ def ask_payload(text, sender, source):
     return {"text": text, "sender_name": "哥哥", "sender_id": sender, "source": source}
 
 
-def is_delivered(send_result):
-    """微信(iLink)投递成功的判据:返回里带新 context_token 才算真投递。
-    issue#35949:缺/stale token 时返 HTTP 200 + errcode 0 但静默丢弃,errcode 不可信。"""
-    return bool((send_result or {}).get("context_token"))
-
-
 def build_c2c_body(text, msg_seq, reply_to=None, msg_type=0, max_len=4000):
     """QQ C2C 文本消息体。content 截到 max_len(QQ 拒收过长会整条失败);
     带 reply_to(收到的 msg_id)= 被动回复(5 分钟内免费),不带 = 主动消息。"""
