@@ -31,6 +31,7 @@ import { imageGenTool } from './tools/builtin/image-gen.js'
 import {
   taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool,
 } from './tools/builtin/task.js'
+import { spawnSubagentTool, spawnParallelTool, bindRegistry as bindSubagentRegistry } from './tools/builtin/spawn-subagent.js'
 import { HotReloader } from './tools/hot-reload.js'
 import { McpManager } from './tools/mcp/manager.js'
 import { isCommandText } from './core/commands.js'
@@ -68,9 +69,12 @@ async function main() {
     messageSendTool, scheduleWakeTool, voiceSendTool, imageGenTool,
     memorySaveTool, memorySearchTool, memoryUpdateTool, memoryForgetTool, knowledgeWriteTool,
     commitmentCreateTool, commitmentDoneTool, streamNoteTool, diaryWriteTool, toolCreateTool,
-    taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool]) {
+    taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool,
+    spawnSubagentTool, spawnParallelTool]) {
     tools.register(t, { reserved: true })
   }
+  // spawn_subagent/spawn_parallel 要 registry 引用做 subsetFor(子代理工具子集),后绑定而非塞进 ToolContext(保持 ctx 干净)
+  bindSubagentRegistry(tools)
   console.log(`[init] ${tools.size} 个内置工具已注册`)
 
   const hotReloader = new HotReloader(config.paths.tools, tools)

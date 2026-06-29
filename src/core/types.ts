@@ -159,6 +159,8 @@ export interface ToolContext {
   sendMessage?: (text: string, imagePath?: string) => Promise<void>
   // 设置下次唤醒(schedule_wake 用)
   scheduleWake?: (seconds: number, reason: string, activityType: string) => void
+  // 子代理递归深度:主 cycle execute 传 0;子代理 subCtx 传 +1。spawn_subagent 据此 depth 硬闸(>=1 拒)
+  depth?: number
 }
 
 export interface ToolResult {

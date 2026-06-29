@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import type { MuConfig, WakeTrigger, ContentBlock, CycleResult } from './types.js'
+import type { MuConfig, WakeTrigger, CycleResult } from './types.js'
 import { ContextAssembler } from './context-assembler.js'
 import { ModelRouter } from '../providers/router.js'
 import { ToolRegistry } from '../tools/registry.js'
@@ -9,10 +9,11 @@ import type { MemoryConsolidation } from '../memory/consolidation.js'
 import { EmbeddingService } from '../memory/embedding.js'
 import { extractEntities } from '../memory/entities.js'
 import { guardStyle } from '../soul/style-guard.js'
-import { log } from './logger.js'
 import { tryCommand } from './commands.js'
 import { cleanResponse } from './loop/directives.js'
+import { runToolLoop } from './loop/tool-loop.js'
 import { SessionStore } from './loop/session-store.js'
+import { resetSubagentTaskBudget } from '../tools/builtin/spawn-subagent.js'
 import {
   loadTasks, pickNextWakeFromTasks, bumpWakeCount,
   taskProgressSig, recordTaskProgress, blockCappedTasks, addNotifiedBlocked,
@@ -66,6 +67,8 @@ export class AgentLoop {
       throw new Error('cycle already running')
     }
     this.running = true
+    // 每个 cycle 重置子代理总数预算(MAX_SUBAGENTS_PER_TASK 按 cycle 计)。cycle 互斥(running),无并发抢
+    resetSubagentTaskBudget()
     const start = Date.now()
     let totalInput = 0
     let totalOutput = 0
@@ -152,11 +155,6 @@ export class AgentLoop {
         && trigger.message.content.text.length <= 20
         && !/[查帮搜找分析想念记得为什么怎么吗呢??]/.test(trigger.message.content.text)
 
-      let messages = this.session.buildMessages()
-      let turns = 0
-      let finalText = ''
-      let lastSubstantive = ''   // 最近一轮去掉 WAKE/MOOD 指令后仍有内容的文本
-
       // cycle 时间预算:20 轮 × GLM 慢推理能跑半小时,期间哥哥的消息全在排队(失联感)。
       // 哥哥在等的 cycle 5 分钟收尾;自主活动没人等,给 15 分钟做深度的事。
       // 但自主推进 task 的 cycle(activity_type==='task')压到 5 分钟——别让单步占满拖慢续唤醒节奏。
@@ -177,104 +175,48 @@ export class AgentLoop {
       // 不误标本轮 postProcess 才自动 block(assemble 已跑完、下轮才注入)的 task,否则永不告知。
       const blockedNoticeBaseline = pendingBlockedNotices(loadTasks(this.config.paths.data)).map(t => t.id)
 
-      while (turns < this.config.agent.max_turns_per_cycle) {
-        if (turns > 0 && Date.now() - start > budgetMs) {
-          console.warn(`[agent-loop] cycle 超时间预算(${Math.round((Date.now() - start) / 1000)}s),带现有结果收尾`)
-          break
-        }
-        turns++
+      // 多轮工具循环抽到 loop/tool-loop.ts(主/子代理共用)。副作用全走回调:assistant/tool_result
+      // 入 session、_stream_entry 进意识流、每轮重取消息走 session.buildMessages()(trimHistory 仍在
+      // session-store)。末轮纯指令回退、budget 守卫、无 tool_use 判停都在 runToolLoop 内。
+      const loopResult = await runToolLoop({
+        system,
+        messages: this.session.buildMessages(),
+        tools: toolDefs,
+        router: this.router,
+        maxTurns: this.config.agent.max_turns_per_cycle,
+        budgetMs,
+        maxTokens: this.config.model.primary.max_tokens ?? 4096,
+        thinking: isSimpleChat ? 'disabled' : undefined,
+        executeTool: (name, input) => this.tools.execute(name, input, {
+          config: this.config,
+          dataDir: this.config.paths.data,
+          store: this.store ?? undefined,
+          depth: 0, // 主 cycle 是 depth 0;子代理 subCtx 传 +1。spawn_subagent 据此 depth 硬闸
+          log: (msg: string) => console.log(`  [tool:${name}] ${msg}`),
+          sendMessage: this.sendRouter
+            ? (text: string, imagePath?: string) => this.sendRouter!(replySource, text, imagePath)
+            : undefined,
+          scheduleWake: this.scheduler
+            ? (seconds, reason, activity) => {
+                this.scheduler!.scheduleNext({ seconds, reason, activity_type: activity })
+                this.assembler.setLastWake(new Date(), activity)
+              }
+            : undefined,
+        }),
+        onAssistant: (msg) => this.session.push(msg),
+        onToolResult: (msg) => this.session.push(msg),
+        onStreamEntry: (entry, activityType) => this.assembler.streamLayer.append(entry, activityType),
+        rebuildMessages: () => this.session.buildMessages(),
+      })
 
-        const response = await this.router.chat({
-          system,
-          messages,
-          tools: toolDefs.length > 0 ? toolDefs : undefined,
-          max_tokens: this.config.model.primary.max_tokens ?? 4096,
-          thinking: isSimpleChat ? 'disabled' : undefined,
-        })
+      const finalText = loopResult.finalText
+      totalInput += loopResult.usage.input
+      totalOutput += loopResult.usage.output
+      totalCacheRead += loopResult.usage.cacheRead
+      toolCallCount += loopResult.toolCallCount
 
-        totalInput += response.usage.input_tokens
-        totalOutput += response.usage.output_tokens
-        totalCacheRead += response.usage.cache_read_input_tokens ?? 0
-
-        const textBlocks = response.content.filter(b => b.type === 'text')
-        const toolUseBlocks = response.content.filter(b => b.type === 'tool_use')
-
-        if (textBlocks.length > 0) {
-          finalText = textBlocks.map(b => b.text).join('')
-          if (cleanResponse(finalText)) lastSubstantive = finalText
-        }
-
-        if (toolUseBlocks.length === 0) {
-          // 存进会话历史前先抹掉 WAKE/MOOD 指令，否则模型下一轮看到自己上次的指令格式会复读。
-          // 清洗后为空(纯指令轮)就不 push——正文已随带 tool 的轮存进历史,空 assistant 消息没价值
-          const cleanedTurn = cleanResponse(finalText)
-          if (cleanedTurn) this.session.push({ role: 'assistant', content: cleanedTurn })
-          break
-        }
-
-        this.session.push({ role: 'assistant', content: response.content })
-
-        const toolResults: ContentBlock[] = []
-        for (const block of toolUseBlocks) {
-          toolCallCount++
-          const toolStart = Date.now()
-          const result = await this.tools.execute(
-            block.name!,
-            block.input!,
-            {
-              config: this.config,
-              dataDir: this.config.paths.data,
-              store: this.store ?? undefined,
-              log: (msg: string) => console.log(`  [tool:${block.name}] ${msg}`),
-              sendMessage: this.sendRouter
-                ? (text: string, imagePath?: string) => this.sendRouter!(replySource, text, imagePath)
-                : undefined,
-              scheduleWake: this.scheduler
-                ? (seconds, reason, activity) => {
-                    this.scheduler!.scheduleNext({ seconds, reason, activity_type: activity })
-                    this.assembler.setLastWake(new Date(), activity)
-                  }
-                : undefined,
-            },
-          )
-
-          log.trace('tool', block.name ?? '?', {
-            ok: result.success,
-            ms: Date.now() - toolStart,
-            error: result.success ? undefined : result.error,
-          })
-
-          // stream_note 等工具用 _stream_entry 给意识流留备忘 —— 这里是唯一的消费点,
-          // 不接的话她调了 stream_note 也一条都落不了盘(06-09 连调 6 次全丢的事故)
-          const se = (result as typeof result & {
-            _stream_entry?: { content: string; activity_type?: string }
-          })._stream_entry
-          if (se?.content) {
-            this.assembler.streamLayer.append(se.content, se.activity_type)
-          }
-
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: result.success ? result.output : `错误: ${result.error}`,
-          })
-        }
-
-        this.session.push({ role: 'user', content: toolResults })
-        messages = this.session.buildMessages()
-      }
-
-      if (turns >= this.config.agent.max_turns_per_cycle && !finalText) {
-        console.warn(`[agent-loop] 达到 max_turns(${turns}) 仍未产出最终回复`)
-      }
-
-      // GLM 多轮工具后,最后一轮常只剩 [WAKE:...] 指令——finalText 被覆盖成纯指令,
-      // 清洗后为空,中间轮生成的正文整段蒸发,用户视角"已读不回"(06-10 10:54 实锤:
-      // 687 token 查了一堆去处,回复却是空)。回退:正文取最近的实质文本,指令保留给 postProcess
-      if (!cleanResponse(finalText) && lastSubstantive) {
-        const directives = finalText.match(/\[(?:WAKE|MOOD):[^\]\n]*\]?/g)?.join(' ') ?? ''
-        console.warn('[agent-loop] 末轮只有指令无正文,回退到上一轮实质内容')
-        finalText = directives ? `${lastSubstantive}\n${directives}` : lastSubstantive
+      if (loopResult.turns >= this.config.agent.max_turns_per_cycle && !finalText) {
+        console.warn(`[agent-loop] 达到 max_turns(${loopResult.turns}) 仍未产出最终回复`)
       }
 
       this.postProcess(finalText, trigger, taskProgressBaseline, blockedNoticeBaseline).catch(err =>
