@@ -45,16 +45,16 @@ export class CLIGateway implements GatewayAdapter {
   async send(msg: OutgoingMessage): Promise<void> {
     for (const content of msg.content) {
       if (content.type === 'text') {
-        console.log(`\n沐: ${content.text}`)
+        console.log(`\nShion: ${content.text}`)
       }
     }
     this.waitingForResponse = false
   }
 
-  startInteractive(onResponse?: () => void): void {
+  startInteractive(): void {
     if (!this.rl || !this.handler) return
 
-    console.log(`沐 v${VERSION} — CLI 模式`)
+    console.log(`Shion v${VERSION} — CLI 模式`)
     console.log('输入消息开始对话。/quit 退出,/clear 清空会话')
     console.log('---')
 

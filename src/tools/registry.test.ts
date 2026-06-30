@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ToolRegistry } from './registry.js'
-import type { ToolDef, ToolContext, ToolResult } from '../core/types.js'
+import type { ToolDef, ToolContext } from '../core/types.js'
 
 // ToolRegistry 是工具沙箱的安全闸:reserved 工具(file_read 等内置高权限)注册后
 // 不能被沐自造的同名工具顶替。这里锁的是"防覆盖"这条安全契约 + 基本增删查执行。
@@ -152,4 +152,14 @@ test('list/toAnthropicTools 顺序跟随注册顺序(Map 插入序)', () => {
   r.register(makeTool('a'))
   assert.deepEqual(r.list(), ['z', 'm', 'a'])
   assert.deepEqual(r.toAnthropicTools().map(t => t.name), ['z', 'm', 'a'])
+})
+
+test('areParallelSafe:全部工具显式标记 parallelSafe 才允许并行', () => {
+  const r = new ToolRegistry()
+  r.register({ name: 'a', description: '', parameters: {}, parallelSafe: true, execute: async () => ({ success: true, output: '' }) })
+  r.register({ name: 'b', description: '', parameters: {}, parallelSafe: true, execute: async () => ({ success: true, output: '' }) })
+  r.register({ name: 'write', description: '', parameters: {}, execute: async () => ({ success: true, output: '' }) })
+  assert.equal(r.areParallelSafe(['a', 'b']), true)
+  assert.equal(r.areParallelSafe(['a', 'write']), false)
+  assert.equal(r.areParallelSafe(['missing']), false)
 })

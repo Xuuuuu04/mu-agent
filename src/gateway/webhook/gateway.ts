@@ -9,7 +9,7 @@ import { Outbox, type OutboxItem } from './outbox.js'
 import { PendingWindow } from './pending-window.js'
 import { AdminApi } from './admin-api.js'
 import { serveStatic } from './static-server.js'
-import { readBody, sendJson } from './http-utils.js'
+import { isOriginAllowed, readBody, sendJson } from './http-utils.js'
 
 export type { WebhookOpts } from './opts.js'
 
@@ -80,7 +80,13 @@ export class WebhookGateway implements GatewayAdapter {
   }
 
   private async handleRequest(req: HttpReq, res: ServerResponse): Promise<void> {
-    res.setHeader('Access-Control-Allow-Origin', '*')
+    const origin = req.headers.origin
+    if (!isOriginAllowed(origin, req.headers.host)) {
+      sendJson(res, { error: 'cross-origin request denied' }, 403)
+      return
+    }
+    if (origin) res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 

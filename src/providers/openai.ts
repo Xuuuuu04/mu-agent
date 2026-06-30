@@ -39,7 +39,7 @@ export function createOpenAIProvider(config: ProviderConfig): ModelProvider {
           Authorization: `Bearer ${config.api_key}`,
         },
         body: JSON.stringify(body),
-      }, config.timeout_ms ?? 120000, config.name)
+      }, config.timeout_ms ?? 120000, config.name, params.signal)
 
       if (!resp.ok) {
         const errText = await resp.text().catch(() => '')
@@ -175,11 +175,21 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 // 带重试的 fetch：5xx/429/超时/网络错重试 2 次指数退避(429 读 Retry-After)。
 // openai-format provider 是裸 fetch，没有 anthropic SDK 的内建重试，作 fallback 末位时尤其需要。
-async function fetchWithRetry(url: string, init: RequestInit, timeoutMs: number, name: string): Promise<Response> {
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  name: string,
+  externalSignal?: AbortSignal,
+): Promise<Response> {
   let lastErr: Error | null = null
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const resp = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+      const timeoutSignal = AbortSignal.timeout(timeoutMs)
+      const signal = externalSignal
+        ? AbortSignal.any([timeoutSignal, externalSignal])
+        : timeoutSignal
+      const resp = await fetch(url, { ...init, signal })
       if ((resp.status >= 500 || resp.status === 429) && attempt < 2) {
         const ra = parseInt(resp.headers.get('retry-after') ?? '')
         await sleep(Number.isFinite(ra) ? ra * 1000 : 1000 * 2 ** attempt)
@@ -188,6 +198,7 @@ async function fetchWithRetry(url: string, init: RequestInit, timeoutMs: number,
       return resp
     } catch (e) {
       lastErr = e as Error
+      if (externalSignal?.aborted) throw lastErr
       if (attempt < 2) { await sleep(1000 * 2 ** attempt); continue }
     }
   }

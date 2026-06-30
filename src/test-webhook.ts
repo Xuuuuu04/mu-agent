@@ -11,7 +11,11 @@ writeFileSync(join(dataDir, 'memory', 'mood.json'), JSON.stringify({ current: 'c
 const PORT = 38219
 const gw = new WebhookGateway({ port: PORT, dataDir })
 let pass = 0, fail = 0
-const check = (n: string, c: boolean) => { console.log(`${c ? '✓' : '✗'} ${n}`); c ? pass++ : fail++ }
+const check = (n: string, c: boolean) => {
+  console.log(`${c ? '✓' : '✗'} ${n}`)
+  if (c) pass++
+  else fail++
+}
 
 const post = async (path: string, body: unknown) => {
   const r = await fetch(`http://127.0.0.1:${PORT}${path}`, {

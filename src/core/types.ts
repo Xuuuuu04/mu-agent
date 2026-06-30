@@ -144,6 +144,8 @@ export interface ToolDef {
   name: string
   description: string
   parameters: Record<string, unknown>
+  // 仅纯只读、互不依赖的工具可标记；同轮全部为 true 时运行时才并行。
+  parallelSafe?: boolean
   // 显式必填字段(MCP 工具用其 inputSchema.required)；没有则按 per-property required!==false 推断
   requiredKeys?: string[]
   execute: (params: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>

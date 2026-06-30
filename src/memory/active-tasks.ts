@@ -1,10 +1,11 @@
 // Task 存储 + 状态机校验 + 自主循环的物理封顶纯函数。
 // 状态文件 data/memory/active-tasks.json:{ tasks: Task[], notified_blocked: string[] }。
 // 这期只做地基,不接进任何 cycle —— 读写 + 校验 + 纯函数 + 单测,系统行为逐字节不变。
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Task, TaskStatus } from '../core/types.js'
 import { absolutizeTime } from './absolutize.js'
+import { atomicWriteJsonSync } from '../core/atomic-file.js'
 
 // ── 有界控制常量(防自主循环失控,模型改不动)──
 export const MAX_ACTIVE_TASKS = 3
@@ -15,8 +16,6 @@ export interface ActiveTasksFile {
   tasks: Task[]
   notified_blocked: string[]
 }
-
-const EMPTY: ActiveTasksFile = { tasks: [], notified_blocked: [] }
 
 function tasksPath(dataDir: string): string {
   return join(dataDir, 'memory', 'active-tasks.json')
@@ -55,7 +54,7 @@ export function saveTasks(dataDir: string, data: ActiveTasksFile, log: (msg: str
       notified_blocked: data.notified_blocked,
     }
     ensureDir(path)
-    writeFileSync(path, JSON.stringify(normalized, null, 2), 'utf-8')
+    atomicWriteJsonSync(path, normalized, 2)
     return true
   } catch (e) {
     log(`[active-tasks] 写盘失败: ${(e as Error).message}`)

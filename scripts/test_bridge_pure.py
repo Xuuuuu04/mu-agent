@@ -55,8 +55,11 @@ class TestSplitReplyChunks(unittest.TestCase):
 
 
 class TestIsAuthorized(unittest.TestCase):
-    def test_no_master_allows_anyone(self):
-        self.assertTrue(is_authorized("anyone", ""))
+    def test_no_master_fails_closed(self):
+        self.assertFalse(is_authorized("anyone", ""))
+
+    def test_explicit_unsafe_escape_hatch(self):
+        self.assertTrue(is_authorized("anyone", "", allow_unsafe=True))
 
     def test_master_set_only_master(self):
         self.assertTrue(is_authorized("bro", "bro"))
@@ -81,7 +84,7 @@ class TestAskPayload(unittest.TestCase):
     def test_structure(self):
         self.assertEqual(
             ask_payload("在吗", "uid", "qq"),
-            {"text": "在吗", "sender_name": "哥哥", "sender_id": "uid", "source": "qq"},
+            {"text": "在吗", "sender_name": "用户", "sender_id": "uid", "source": "qq"},
         )
 
 

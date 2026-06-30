@@ -1,6 +1,7 @@
 // 待发件箱:主动消息发 QQ 失败时落这里,QQ 恢复后由 mu.ts 重投。
 // 自包含状态机(内存 deque 上限 50 + JSON 落盘),便于单测。
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
+import { atomicWriteJsonSync } from '../../core/atomic-file.js'
 
 export interface OutboxItem { id: number; text: string; ts: number }
 
@@ -50,7 +51,7 @@ export class Outbox {
   private save(): void {
     if (!this.file) return
     try {
-      writeFileSync(this.file, JSON.stringify({ seq: this.seq, messages: this.items }))
+      atomicWriteJsonSync(this.file, { seq: this.seq, messages: this.items })
     } catch { /* 落盘失败不影响主流程 */ }
   }
 }

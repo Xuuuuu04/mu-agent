@@ -69,6 +69,10 @@ export class ToolRegistry {
     return this.toAnthropicTools().filter(t => allow.has(t.name))
   }
 
+  areParallelSafe(names: string[]): boolean {
+    return names.length > 0 && names.every(name => this.tools.get(name)?.parallelSafe === true)
+  }
+
   get size(): number {
     return this.tools.size
   }

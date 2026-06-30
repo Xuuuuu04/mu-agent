@@ -1,9 +1,10 @@
 // 承诺管理:创建(一次性/周期性)+ 标记完成。
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ToolDef, Commitment } from '../../../core/types.js'
 import { absolutizeTime } from '../../../memory/absolutize.js'
 import { ensureDir } from './_shared.js'
+import { atomicWriteJsonSync } from '../../../core/atomic-file.js'
 
 export const commitmentCreateTool: ToolDef = {
   name: 'commitment_create',
@@ -33,7 +34,7 @@ export const commitmentCreateTool: ToolDef = {
     }
 
     existing.push(commitment)
-    writeFileSync(commitmentsPath, JSON.stringify(existing, null, 2), 'utf-8')
+    atomicWriteJsonSync(commitmentsPath, existing, 2)
     ctx.log(`承诺记下了: ${commitment.content}`)
     return { success: true, output: `记下了: ${commitment.content}` }
   },
@@ -63,7 +64,7 @@ export const commitmentDoneTool: ToolDef = {
     }
     target.last_done = new Date().toISOString()
 
-    writeFileSync(commitmentsPath, JSON.stringify(commitments, null, 2), 'utf-8')
+    atomicWriteJsonSync(commitmentsPath, commitments, 2)
     return { success: true, output: `完成了: ${target.content}` }
   },
 }

@@ -90,6 +90,7 @@ export const taskCreateTool: ToolDef = {
 
 export const taskListTool: ToolDef = {
   name: 'task_list',
+  parallelSafe: true,
   description: '列出当前活跃的任务(open/in_progress/in_review),看看有哪些事在跟进',
   parameters: {},
   async execute(_params, ctx) {

@@ -203,6 +203,7 @@ export class AgentLoop {
               }
             : undefined,
         }),
+        canExecuteInParallel: names => this.tools.areParallelSafe(names),
         onAssistant: (msg) => this.session.push(msg),
         onToolResult: (msg) => this.session.push(msg),
         onStreamEntry: (entry, activityType) => this.assembler.streamLayer.append(entry, activityType),
@@ -341,25 +342,23 @@ export class AgentLoop {
 
     const seconds = Math.max(0, Math.round((Date.parse(pick.wakeAt) - Date.now()) / 1000))
 
-    // M3:有 pending wake 时分两种——
-    //  - 用户提醒(reason 不是 task 唤醒前缀):绝不覆盖,task 这次让位,下个 cycle 再从
-    //    active-tasks.json 重新排(pickNextWakeFromTasks 每轮都能重推,零损失)。
-    //  - task 唤醒(reason 是 task 前缀):取两者最早,pending 更早或相等就不重排。
-    const status = this.scheduler.getStatus()
-    if (status.nextWake) {
-      const isPendingTaskWake = status.reason.startsWith(TASK_WAKE_REASON_PREFIX)
-      if (!isPendingTaskWake) return // 用户提醒优先,绝不覆盖
-      if (status.nextWake.getTime() <= Date.now() + seconds * 1000) return // 已排的 task 唤醒更早,不重排
-    }
+    // 多 wake 调度:用户提醒与不同 task 各自占一个槽,互不覆盖。只对“同一个 task”去重:
+    // 已有 wake 更早则保持；已有 wake 更晚则前移，但不重复 bump wake_count。
+    const reason = `${TASK_WAKE_REASON_PREFIX}${pick.taskId}`
+    const existing = this.scheduler.getScheduledWakes()
+      .find(w => w.kind === 'task' && w.reason === reason)
+    const desiredAt = Date.now() + seconds * 1000
+    if (existing && Date.parse(existing.at) <= desiredAt) return
 
-    // fail-closed:wake_count 落盘失败就不排这次(宁可不续,别在计数没落盘时绕过上限)。
-    if (!bumpWakeCount(dataDir, pick.taskId, (msg) => console.log(`  [task-wake] ${msg}`))) {
+    // 首次为该 task 排 wake 才计数；重排同一 wake 不重复计数。
+    if (!existing
+      && !bumpWakeCount(dataDir, pick.taskId, (msg) => console.log(`  [task-wake] ${msg}`))) {
       console.warn('[agent-loop] bumpWakeCount 写盘失败,本次不排续唤醒(cron 兜底接)')
       return
     }
     this.scheduler.scheduleNext({
       seconds,
-      reason: `${TASK_WAKE_REASON_PREFIX}${pick.taskId}`,
+      reason,
       activity_type: 'task',
     })
   }

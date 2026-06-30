@@ -1,7 +1,7 @@
 // 面板/管理 API:她的 Web 小房间和管理命令的只读查询 + 受限写入(config/soul/留言板)。
 // 从主网关剥出来,让 WebhookGateway 回到"网关"本质。所有路由经 tryHandle 分发。
 import { VERSION } from '../../version.js'
-import { readFileSync, existsSync, writeFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import YAML from 'yaml'
 import type { IncomingMessage as HttpReq, ServerResponse } from 'node:http'
@@ -9,6 +9,7 @@ import type { MemoryStore } from '../../memory/store.js'
 import type { WebhookOpts } from './opts.js'
 import type { Outbox } from './outbox.js'
 import { readBody, clampInt, sendJson } from './http-utils.js'
+import { atomicWriteFileSync, atomicWriteJsonSync } from '../../core/atomic-file.js'
 
 export interface AdminApiDeps {
   store: MemoryStore | null
@@ -131,7 +132,7 @@ export class AdminApi {
     for (const key of ['scheduler', 'agent', 'proactive'] as const) {
       if (body[key]) parsed[key] = { ...(parsed[key] as object), ...(body[key] as object) }
     }
-    writeFileSync(this.opts.configPath, YAML.stringify(parsed), 'utf-8')
+    atomicWriteFileSync(this.opts.configPath, YAML.stringify(parsed))
     sendJson(res, { ok: true, note: '已写入,重启生效' })
   }
 
@@ -157,7 +158,7 @@ export class AdminApi {
     if (!body.file || body.content === undefined) { sendJson(res, { error: 'missing file/content' }, 400); return }
     const safe = basename(body.file)
     if (!safe.endsWith('.md')) { sendJson(res, { error: 'only .md' }, 400); return }
-    writeFileSync(join(this.opts.soulDir, safe), body.content, 'utf-8')
+    atomicWriteFileSync(join(this.opts.soulDir, safe), body.content)
     sendJson(res, { ok: true })
   }
 
@@ -220,7 +221,7 @@ export class AdminApi {
       try { return JSON.parse(readFileSync(path, 'utf-8')) as unknown[] } catch { return [] }
     })()
     list.push({ name, text, time: new Date().toISOString() })
-    writeFileSync(path, JSON.stringify(list.slice(-100), null, 2), 'utf-8')
+    atomicWriteJsonSync(path, list.slice(-100), 2)
     this.deps.getEventHandler()?.(`留言板有新留言,${name}说: ${text}`, { name, text })
     sendJson(res, { ok: true })
   }

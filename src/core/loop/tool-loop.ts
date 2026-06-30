@@ -20,8 +20,11 @@ export interface ToolLoopParams {
   budgetMs: number
   maxTokens: number
   thinking?: 'disabled'
+  abortSignal?: AbortSignal
   // 工具执行:内部已 try/catch,绝不抛(对标 ToolRegistry.execute)
   executeTool: (name: string, input: Record<string, unknown>) => Promise<ToolResult>
+  // 只有调用方明确证明这一整组工具无副作用时才并行；默认串行。
+  canExecuteInParallel?: (names: string[]) => boolean
   // assistant 内容入历史(主=session.push;子=noop)
   onAssistant?: (msg: ChatMessage) => void
   // tool_result 入历史(主=session.push;子=noop)
@@ -79,11 +82,19 @@ export async function runToolLoop(p: ToolLoopParams): Promise<ToolLoopResult> {
       tools: p.tools.length > 0 ? p.tools : undefined,
       max_tokens: p.maxTokens,
       thinking: p.thinking,
+      signal: p.abortSignal,
     })
 
     totalInput += response.usage.input_tokens
     totalOutput += response.usage.output_tokens
     totalCacheRead += response.usage.cache_read_input_tokens ?? 0
+
+    // chat 等待期间可能刚好超时/取消。返回的 tool_use 已经迟到，绝不能再执行副作用；
+    // 这是子代理 timeout race 的最后一道物理闸。
+    if (p.shouldCancel?.()) {
+      stopReason = 'cancelled'
+      break
+    }
 
     const textBlocks = response.content.filter(b => b.type === 'text')
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use')
@@ -104,8 +115,7 @@ export async function runToolLoop(p: ToolLoopParams): Promise<ToolLoopResult> {
 
     p.onAssistant?.({ role: 'assistant', content: response.content })
 
-    const toolResults: ContentBlock[] = []
-    for (const block of toolUseBlocks) {
+    const executeBlock = async (block: ContentBlock): Promise<ContentBlock> => {
       toolCallCount++
       const toolStart = Date.now()
       const result = await p.executeTool(block.name!, block.input!)
@@ -125,11 +135,20 @@ export async function runToolLoop(p: ToolLoopParams): Promise<ToolLoopResult> {
         p.onStreamEntry?.(se.content, se.activity_type)
       }
 
-      toolResults.push({
+      return {
         type: 'tool_result',
         tool_use_id: block.id,
         content: result.success ? result.output : `错误: ${result.error}`,
-      })
+      }
+    }
+
+    let toolResults: ContentBlock[]
+    const names = toolUseBlocks.map(b => b.name ?? '')
+    if (toolUseBlocks.length > 1 && p.canExecuteInParallel?.(names)) {
+      toolResults = await Promise.all(toolUseBlocks.map(executeBlock))
+    } else {
+      toolResults = []
+      for (const block of toolUseBlocks) toolResults.push(await executeBlock(block))
     }
 
     p.onToolResult?.({ role: 'user', content: toolResults })

@@ -403,6 +403,101 @@ test('runToolLoop:shouldCancel 触发后下一轮停 → stopReason=cancelled,�
   assert.equal(captured.length, 1) // 没起第二轮 chat
 })
 
+test('runToolLoop:chat 等待期间被取消 → 返回后不执行迟到的工具副作用', async () => {
+  const { registry, calls } = makeCountingRegistry()
+  const { ctx } = makeSubCtx()
+  let cancelled = false
+  const router = {
+    primaryName: 'mock',
+    chat: async () => {
+      cancelled = true
+      return {
+        id: 'late',
+        content: [toolUse('late-tool', 'web_search', { q: 'late' })],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }
+    },
+  } as unknown as ModelRouter
+  const r = await runToolLoop({
+    system: 'sys',
+    messages: [{ role: 'user', content: 'x' }],
+    tools: registry.subsetFor(['web_search']),
+    router,
+    maxTurns: 2,
+    budgetMs: 1000,
+    maxTokens: 100,
+    executeTool: (name, input) => registry.execute(name, input, ctx),
+    shouldCancel: () => cancelled,
+  })
+  assert.equal(r.stopReason, 'cancelled')
+  assert.equal(r.toolCallCount, 0)
+  assert.equal(calls.web, 0, '取消后迟到的 tool_use 不能产生副作用')
+})
+
+test('runToolLoop:把 AbortSignal 透传给 provider chat', async () => {
+  const controller = new AbortController()
+  let seen: AbortSignal | undefined
+  const router = {
+    primaryName: 'mock',
+    chat: async (params: ChatParams) => {
+      seen = params.signal
+      return { id: 'x', content: [{ type: 'text', text: 'done' }], stop_reason: 'end', usage: { input_tokens: 1, output_tokens: 1 } }
+    },
+  } as unknown as ModelRouter
+  await runToolLoop({
+    system: 'sys',
+    messages: [{ role: 'user', content: 'x' }],
+    tools: [],
+    router,
+    maxTurns: 1,
+    budgetMs: 1000,
+    maxTokens: 100,
+    abortSignal: controller.signal,
+    executeTool: async () => ({ success: true, output: '' }),
+  })
+  assert.equal(seen, controller.signal)
+})
+
+test('runToolLoop:同轮全部标记为 parallel-safe 的工具并行执行并保持结果顺序', async () => {
+  let turn = 0
+  let active = 0
+  let peak = 0
+  const router = {
+    primaryName: 'mock',
+    chat: async () => ({
+      id: 'p',
+      content: turn++ === 0
+        ? [toolUse('a', 'read_a'), toolUse('b', 'read_b')]
+        : [{ type: 'text', text: 'done' }],
+      stop_reason: 'end',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }),
+  } as unknown as ModelRouter
+  const results: ChatMessage[] = []
+  await runToolLoop({
+    system: 'sys',
+    messages: [{ role: 'user', content: 'x' }],
+    tools: [],
+    router,
+    maxTurns: 2,
+    budgetMs: 1000,
+    maxTokens: 100,
+    canExecuteInParallel: names => names.every(n => n.startsWith('read_')),
+    executeTool: async (name) => {
+      active++
+      peak = Math.max(peak, active)
+      await new Promise(r => setTimeout(r, name === 'read_a' ? 15 : 5))
+      active--
+      return { success: true, output: name }
+    },
+    onToolResult: m => results.push(m),
+  })
+  assert.equal(peak, 2)
+  const blocks = results[0]!.content as ContentBlock[]
+  assert.deepEqual(blocks.map(b => b.tool_use_id), ['a', 'b'])
+})
+
 // ── Fix 3(子集物理隔离)— executeTool 调一个不在子集的 name → 返 success:false,真工具不被执行 ──
 test('runSubagent worker:幻觉出黑名单工具名(message_send)→ executeTool 物理拒,真工具不执行', async () => {
   const { registry, calls } = makeCountingRegistry()

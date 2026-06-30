@@ -1,10 +1,11 @@
 // 会话状态机:拥有 sessionHistory / sessionId / lastActivity,负责裁剪、轮转、
 // autocompact(带代次校验)、落盘/恢复。从 agent-loop 抽出来,单一职责、可独立单测。
 // 这些都是 06-09 死亡螺旋事故换来的不变量,改这里先跑 session-store.test.ts。
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
+import { readFileSync, existsSync, unlinkSync } from 'node:fs'
 import type { ChatMessage } from '../types.js'
 import { trimHistory, isSafeStart } from '../history.js'
 import { sanitizeMessages } from '../../providers/sanitize-messages.js'
+import { atomicWriteJsonSync } from '../atomic-file.js'
 
 // autocompact 只需要 consolidation 的 compactHistory,不耦合整个 MemoryConsolidation
 export interface CompactConsolidation {
@@ -92,11 +93,11 @@ export class SessionStore {
   // 会话落盘:重启(部署/崩溃)不再丢短期对话记忆。autocompact 把规模压在 ~40 条内,写整个文件没负担
   persist(): void {
     try {
-      writeFileSync(this.file, JSON.stringify({
+      atomicWriteJsonSync(this.file, {
         sessionId: this._sessionId,
         lastActivity: this._lastActivity,
         history: this.history,
-      }))
+      })
     } catch { /* 落盘失败不影响对话 */ }
   }
 

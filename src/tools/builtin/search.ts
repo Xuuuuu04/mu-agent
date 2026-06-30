@@ -6,6 +6,7 @@ import type { ToolDef } from '../../core/types.js'
 // xpark 在国内,DDG 实测连不上(06-10),智谱按量计费没充值,bing 是无 key 兜底。
 export const webSearchTool: ToolDef = {
   name: 'web_search',
+  parallelSafe: true,
   description: '搜索引擎查询。想知道实时信息、查个东西时用',
   parameters: {
     query: { type: 'string', description: '搜索词' },

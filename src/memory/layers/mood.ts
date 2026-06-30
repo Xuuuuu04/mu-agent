@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { Mood, MoodState } from '../../core/types.js'
+import { atomicWriteJsonSync } from '../../core/atomic-file.js'
 
 const VALID_MOODS: Mood[] = ['calm', 'missing', 'emo', 'excited', 'sleepy', 'active']
 
@@ -32,6 +33,6 @@ export function updateMood(dataDir: string, mood: string, reason: string): boole
     reason: reason || prev?.reason || '',
     previous: prev ? { mood: prev.current, changed_at: prev.since } : undefined,
   }
-  writeFileSync(path, JSON.stringify(next, null, 2), 'utf-8')
+  atomicWriteJsonSync(path, next, 2)
   return true
 }

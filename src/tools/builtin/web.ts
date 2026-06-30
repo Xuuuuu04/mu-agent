@@ -1,4 +1,18 @@
 import type { ToolDef } from '../../core/types.js'
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
+
+type LookupResult = { address: string; family: number }
+type LookupFn = (hostname: string) => Promise<LookupResult[]>
+
+let dnsLookup: LookupFn = async (hostname) =>
+  lookup(hostname, { all: true, verbatim: true }) as Promise<LookupResult[]>
+
+// 仅测试替换 DNS；传 null 恢复真实解析。
+export function setDnsLookupForTests(fn: LookupFn | null): void {
+  dnsLookup = fn ?? (async (hostname) =>
+    lookup(hostname, { all: true, verbatim: true }) as Promise<LookupResult[]>)
+}
 
 export const webFetchTool: ToolDef = {
   name: 'web_fetch',
@@ -10,9 +24,7 @@ export const webFetchTool: ToolDef = {
     headers: { type: 'object', description: '额外请求头', required: false as unknown as string },
   },
   async execute(params) {
-    const url = params.url as string
-    const blocked = ssrfBlocked(url)
-    if (blocked) return { success: false, output: '', error: blocked }
+    let url = params.url as string
     const method = (params.method as string) || 'GET'
     const body = params.body as string | undefined
     const headers = (params.headers as Record<string, string>) || {}
@@ -20,18 +32,45 @@ export const webFetchTool: ToolDef = {
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 30000)
-
-      const response = await fetch(url, {
-        method,
-        body: body || undefined,
-        headers: {
-          'User-Agent': 'Mu-Agent/0.1',
-          ...headers,
-        },
-        signal: controller.signal,
-      })
-
-      clearTimeout(timeout)
+      let response: Response | null = null
+      let currentMethod = method
+      let currentBody = body || undefined
+      try {
+        for (let hop = 0; hop <= 5; hop++) {
+          const blocked = await publicUrlBlocked(url)
+          if (blocked) {
+            return {
+              success: false,
+              output: '',
+              error: hop > 0 ? `重定向不允许: ${blocked}` : blocked,
+            }
+          }
+          response = await fetch(url, {
+            method: currentMethod,
+            body: currentBody,
+            headers: {
+              'User-Agent': 'Shion-Agent/0.3',
+              ...headers,
+            },
+            signal: controller.signal,
+            redirect: 'manual',
+          })
+          const location = response.headers.get('location')
+          if (response.status < 300 || response.status >= 400 || !location) break
+          if (hop === 5) {
+            return { success: false, output: '', error: '重定向次数过多' }
+          }
+          url = new URL(location, url).toString()
+          if (response.status === 303
+            || ((response.status === 301 || response.status === 302) && currentMethod.toUpperCase() === 'POST')) {
+            currentMethod = 'GET'
+            currentBody = undefined
+          }
+        }
+      } finally {
+        clearTimeout(timeout)
+      }
+      if (!response) return { success: false, output: '', error: '请求未执行' }
 
       const contentType = response.headers.get('content-type') || ''
       let text: string
@@ -110,4 +149,39 @@ export function ssrfBlocked(raw: string): string | null {
     return '不允许访问私网/回环地址'
   }
   return null
+}
+
+async function publicUrlBlocked(raw: string): Promise<string | null> {
+  const direct = ssrfBlocked(raw)
+  if (direct) return direct
+  const host = new URL(raw).hostname.replace(/^\[|\]$/g, '')
+  if (isIP(host)) return null // 字面 IP 已由 ssrfBlocked 检查
+  let addresses: LookupResult[]
+  try {
+    addresses = await dnsLookup(host)
+  } catch (err) {
+    return `DNS 解析失败: ${(err as Error).message}`
+  }
+  if (addresses.length === 0) return 'DNS 没有返回地址'
+  if (addresses.some(a => isPrivateAddress(a.address))) return 'DNS 解析到私网/回环地址'
+  return null
+}
+
+function isPrivateAddress(raw: string): boolean {
+  const address = raw.toLowerCase().replace(/^\[|\]$/g, '')
+  const mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1]
+  const ip = mapped ?? address
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number)
+    return a === 0 || a === 10 || a === 127
+      || (a === 100 && b! >= 64 && b! <= 127)
+      || (a === 169 && b === 254)
+      || (a === 172 && b! >= 16 && b! <= 31)
+      || (a === 192 && b === 168)
+      || (a === 198 && (b === 18 || b === 19))
+      || a! >= 224
+  }
+  return ip === '::' || ip === '::1'
+    || ip.startsWith('fc') || ip.startsWith('fd')
+    || /^fe[89ab]/.test(ip)
 }

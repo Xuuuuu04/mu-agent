@@ -1,11 +1,12 @@
 // 长期事实 CRUD:记住(save)/ 检索(search,三路)/ 更新(update)/ 忘掉(forget)。
 // 检索:user-facts → episodes+日摘要 → ima 知识库(笔记 + 订阅 KB)。
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ToolDef } from '../../../core/types.js'
 import { absolutizeTime } from '../../../memory/absolutize.js'
 import { ensureDir, fuzzyMatchLine } from './_shared.js'
 import { searchKnowledgeIma } from './ima.js'
+import { atomicWriteFileSync } from '../../../core/atomic-file.js'
 
 export const memorySaveTool: ToolDef = {
   name: 'memory_save',
@@ -27,7 +28,7 @@ export const memorySaveTool: ToolDef = {
     const content = absolutizeTime(params.content as string)
     const entry = `\n[${timestamp}] [${params.category}] ${content}\n`
 
-    writeFileSync(factsPath, existing + entry, 'utf-8')
+    atomicWriteFileSync(factsPath, existing + entry)
     ctx.log(`记住了: ${(params.content as string).slice(0, 50)}`)
     return { success: true, output: '记住了' }
   },
@@ -35,6 +36,7 @@ export const memorySaveTool: ToolDef = {
 
 export const memorySearchTool: ToolDef = {
   name: 'memory_search',
+  parallelSafe: true,
   description: '搜索过去的记忆。想回忆之前聊过的事、说过的话时用这个(事实和对话记录都会搜)',
   parameters: {
     query: { type: 'string', description: '搜索关键词' },
@@ -113,7 +115,7 @@ export const memoryUpdateTool: ToolDef = {
     }
     const date = new Date().toISOString().slice(0, 10)
     lines[idx] = `[${date}] [updated] ${absolutizeTime(params.new as string)}`
-    writeFileSync(factsPath, lines.join('\n'), 'utf-8')
+    atomicWriteFileSync(factsPath, lines.join('\n'))
     ctx.log(`更新了: ${(params.new as string).slice(0, 50)}`)
     return { success: true, output: '改好了' }
   },
@@ -143,7 +145,7 @@ export const memoryForgetTool: ToolDef = {
       return { success: false, output: '', error: `"${params.key}" 命中 ${matched.length} 条，太宽泛不敢直接删。用更精确的关键词指定要忘的那条：\n${preview}` }
     }
     const kept = lines.filter(l => l !== matched[0])
-    writeFileSync(factsPath, kept.join('\n'), 'utf-8')
+    atomicWriteFileSync(factsPath, kept.join('\n'))
     ctx.log(`忘掉了: ${matched[0]!.trim().slice(0, 40)}`)
     return { success: true, output: '忘掉了' }
   },

@@ -5,6 +5,7 @@ import type { Scheduler } from './scheduler.js'
 import type { Commitment, MoodState } from './types.js'
 import { relativeTime } from '../memory/layers/temporal.js'
 import { loadTasks } from '../memory/active-tasks.js'
+import { approveShellRequest, rejectShellRequest } from '../tools/builtin/shell.js'
 
 export interface CommandDeps {
   dataDir: string
@@ -36,7 +37,7 @@ export function tryCommand(text: string, deps: CommandDeps): string | null {
       return helpText()
     case 'new': case 'clear':
       deps.clearSession()
-      return '好啦 这轮聊天清空 重新开始～\n(放心 你的事我都还记着呢 清掉的只是这次对话 不是记忆)'
+      return '当前会话已清空；长期记忆保留。'
     case 'status': case 's':
       return statusText(deps)
     case 'mood':
@@ -47,20 +48,26 @@ export function tryCommand(text: string, deps: CommandDeps): string | null {
       return tasksText(deps)
     case 'memory': case 'mem':
       return memoryText(deps, parts.slice(1).join(' '))
+    case 'approve-shell':
+      return approveShellRequest(parts[1] ?? '')
+    case 'reject-shell':
+      return rejectShellRequest(parts[1] ?? '')
     default:
-      return `没这个命令诶～ 发 /help 看看有啥能用的`
+      return '未知命令。发送 /help 查看可用命令。'
   }
 }
 
 function helpText(): string {
   return [
-    '能用的命令:',
+    '可用命令:',
     '/new 或 /clear — 清空这轮对话(长期记忆保留)',
     '/status — 看我的状态(心情/记忆/下次醒)',
     '/mood — 我现在什么心情',
     '/todo — 答应你的事都在这',
     '/tasks — 正在跟进的任务',
     '/memory 关键词 — 翻翻我记得的事',
+    '/approve-shell ID — 批准一条待执行的高风险 Shell 命令',
+    '/reject-shell ID — 拒绝一条待执行的 Shell 命令',
     '/help — 就是这个',
   ].join('\n')
 }
@@ -97,7 +104,7 @@ function moodText(deps: CommandDeps): string {
 
 function todoText(deps: CommandDeps): string {
   const cs = activeCommitments(deps.dataDir)
-  if (cs.length === 0) return '没有待办～ 你答应的事我都看着呢,有新的随时记'
+  if (cs.length === 0) return '当前没有待办。'
   const now = new Date()
   const lines = cs.map(c => {
     let tag = ''
@@ -109,7 +116,7 @@ function todoText(deps: CommandDeps): string {
     }
     return `- ${c.content}${tag}`
   })
-  return '答应你的事:\n' + lines.join('\n')
+  return '待办:\n' + lines.join('\n')
 }
 
 // /tasks 列活跃 task(open/in_progress/in_review),区别于 /todo 的扁平承诺
@@ -124,12 +131,12 @@ function tasksText(deps: CommandDeps): string {
 }
 
 function memoryText(deps: CommandDeps, query: string): string {
-  if (!query) return '想翻什么? 比如 /memory 深圳'
+  if (!query) return '请提供关键词，例如 /memory 深圳'
   const lines: string[] = []
   const rows = deps.store.searchHybrid(query, 6)
   for (const r of rows) {
     const t = relativeTime(new Date(r.timestamp), new Date())
-    const who = r.role === 'user' ? '你' : '我'
+    const who = r.role === 'user' ? '用户' : 'Shion'
     lines.push(`[${t}] ${who}: ${r.content.slice(0, 50)}`)
   }
   // 摘要也搜(episodes 之外的召回盲区)

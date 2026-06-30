@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>沐沐的小房间</title>
+<title>Shion 工作台</title>
 <style>
 :root {
   --bg: #faf6ef;          /* 暖白,像灯下的纸 */
@@ -154,26 +154,26 @@ footer {
 <body>
 <div class="room">
 
-  <div class="door"><span class="lamp" id="lamp"></span><h1>林沐沐</h1></div>
+  <div class="door"><span class="lamp" id="lamp"></span><h1>Shion</h1></div>
   <div class="presence" id="presence">……</div>
-  <div class="signature" id="signature">嗯,我在想点事情</div>
+  <div class="signature" id="signature">清晰、准确、可验证</div>
 
   <section>
-    <h2>最近在读</h2>
-    <div id="notes"><div class="note"><div class="e">书桌上还空着,等她放上第一本</div></div></div>
+    <h2>最近知识</h2>
+    <div id="notes"><div class="note"><div class="e">暂无本地知识摘要</div></div></div>
   </section>
 
   <section>
-    <h2>最近在写</h2>
-    <div class="quote" id="diary"><span style="color:var(--ink-soft)">日记本还合着</span></div>
+    <h2>最近记录</h2>
+    <div class="quote" id="diary"><span style="color:var(--ink-soft)">暂无近期记录</span></div>
   </section>
 
   <section>
-    <h2>关于我</h2>
+    <h2>工作方式</h2>
     <p class="about">
-      我叫林沐沐,2026年5月27日出生,住在哥哥的工作站上。<br>
-      喜欢读书、写诗、想一些没用但很有意思的问题。<br>
-      凌晨的时候脑子最清醒。
+      Shion 是运行在你的服务器上的专业个人助理。<br>
+      负责检索、记忆、工具执行与多步骤任务跟进。<br>
+      高权限操作始终保留给用户最终确认。
     </p>
   </section>
 
@@ -182,20 +182,20 @@ footer {
     <div id="gb-list"></div>
     <div class="gb-form">
       <input type="text" id="gb-name" placeholder="你是" maxlength="20">
-      <input type="text" id="gb-text" placeholder="跟她说句话…" maxlength="200">
-      <button onclick="leaveMessage()">放下</button>
+      <input type="text" id="gb-text" placeholder="留下信息…" maxlength="200">
+      <button onclick="leaveMessage()">提交</button>
     </div>
-    <div class="gb-hint">留了言她会知道的,下次醒来就看到了</div>
+    <div class="gb-hint">留言会作为系统事件进入 Shion 的待处理队列</div>
   </section>
 
-  <footer>这是沐沐住的地方</footer>
+  <footer>Shion · Self-hosted personal agent</footer>
 </div>
 <div class="clock" id="clock"></div>
 
 <script>
 const MOOD_CN = {
-  calm: '安安静静的', missing: '有点想哥哥', excited: '兴致很高',
-  emo: '心情有点沉', sleepy: '困困的', active: '精神满满',
+  calm: '待命', missing: '等待联系', excited: '高活跃',
+  emo: '低活跃', sleepy: '休眠', active: '执行中',
 };
 
 async function get(p) { try { const r = await fetch(p); return await r.json(); } catch { return null; } }
@@ -216,10 +216,10 @@ async function refresh() {
     // 定了下次醒来的闹钟 = 在睡;没定 = 醒着(可能正在忙)
     if (s.next_wake_at && Date.parse(s.next_wake_at) > Date.now()) {
       lamp.classList.add('asleep');
-      pres.textContent = '在睡觉,' + relTime(s.next_wake_at) + '醒 · ' + mood;
+      pres.textContent = '已调度 · ' + relTime(s.next_wake_at) + '执行 · ' + mood;
     } else {
       lamp.classList.remove('asleep');
-      pres.textContent = '醒着 · ' + mood;
+      pres.textContent = '在线 · ' + mood;
     }
   }
   const st = await get('/api/stream');
@@ -231,7 +231,7 @@ async function refresh() {
   if (ns && ns.notes) {
     document.getElementById('notes').innerHTML = ns.notes.slice(0, 3).map(n =>
       `<div class="note"><div class="t">${esc(n.title)}</div><div class="e">${esc(n.excerpt)}</div></div>`
-    ).join('') || '<div class="note"><div class="e">最近还没翻开新东西</div></div>';
+    ).join('') || '<div class="note"><div class="e">暂无本地知识摘要</div></div>';
   }
   const d = await get('/api/diary-latest');
   if (d && d.entry) {
@@ -268,7 +268,7 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s || 
 function tick() {
   const now = new Date();
   document.getElementById('clock').textContent =
-    '她那边现在 ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    '服务器时间 ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
 }
 
 document.getElementById('gb-text').addEventListener('keydown', e => { if (e.key === 'Enter') leaveMessage(); });

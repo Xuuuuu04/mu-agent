@@ -83,7 +83,7 @@ test('tryCommand: /help 返回帮助文本(列出命令)', () => {
   try {
     const out = tryCommand('/help', deps)
     assert.ok(out !== null)
-    assert.match(out!, /能用的命令/)
+    assert.match(out!, /可用命令/)
     assert.match(out!, /\/new/)
     assert.match(out!, /\/status/)
     assert.match(out!, /\/memory/)
@@ -138,8 +138,24 @@ test('tryCommand: 未知命令返回提示,不调 clearSession', () => {
   const { deps, cleanup, clearCalls } = makeDeps()
   try {
     const out = tryCommand('/nope', deps)
-    assert.match(out!, /没这个命令/)
+    assert.match(out!, /未知命令/)
     assert.equal(clearCalls(), 0)
+  } finally { cleanup() }
+})
+
+test('tryCommand: /approve-shell 走零 token 真人批准入口', () => {
+  const { deps, cleanup } = makeDeps()
+  try {
+    const r = tryCommand('/approve-shell missing', deps)
+    assert.match(r ?? '', /不存在或已过期/)
+  } finally { cleanup() }
+})
+
+test('tryCommand: /reject-shell 可拒绝待执行命令', () => {
+  const { deps, cleanup } = makeDeps()
+  try {
+    const r = tryCommand('/reject-shell missing', deps)
+    assert.match(r ?? '', /不存在或已过期/)
   } finally { cleanup() }
 })
 
@@ -243,7 +259,7 @@ test('tryCommand: /commitments 是 todo 别名', () => {
 test('tryCommand: /memory 无关键词提示要词', () => {
   const { deps, cleanup } = makeDeps()
   try {
-    assert.match(tryCommand('/memory', deps)!, /想翻什么/)
+    assert.match(tryCommand('/memory', deps)!, /请提供关键词/)
   } finally { cleanup() }
 })
 

@@ -51,7 +51,10 @@ export function createAnthropicProvider(config: ProviderConfig): ModelProvider {
         requestParams.stop_sequences = params.stop_sequences
       }
 
-      const response = await client.messages.create(requestParams as unknown as Anthropic.MessageCreateParamsNonStreaming)
+      const response = await client.messages.create(
+        requestParams as unknown as Anthropic.MessageCreateParamsNonStreaming,
+        params.signal ? { signal: params.signal } : undefined,
+      )
 
       const content: ContentBlock[] = []
       for (const block of response.content) {

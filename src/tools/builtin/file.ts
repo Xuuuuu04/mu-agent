@@ -5,6 +5,7 @@ import type { ToolDef } from '../../core/types.js'
 export const fileReadTool: ToolDef = {
   name: 'file_read',
   description: '读取文件内容',
+  parallelSafe: true,
   parameters: {
     path: { type: 'string', description: '文件路径(相对于数据目录)' },
   },
@@ -51,6 +52,7 @@ export const fileWriteTool: ToolDef = {
 export const fileListTool: ToolDef = {
   name: 'file_list',
   description: '列出目录下的文件和文件夹',
+  parallelSafe: true,
   parameters: {
     path: { type: 'string', description: '目录路径(相对于数据目录),默认为根目录', required: false as unknown as string },
   },

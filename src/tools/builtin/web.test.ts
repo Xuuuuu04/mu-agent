@@ -1,6 +1,6 @@
-import { test } from 'node:test'
+import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { webFetchTool, ssrfBlocked, htmlToText } from './web.js'
+import { webFetchTool, ssrfBlocked, htmlToText, setDnsLookupForTests } from './web.js'
 import type { ToolContext } from '../../core/types.js'
 
 // web_fetch.execute 直接调全局 fetch(无注入点),用替换 globalThis.fetch + finally 还原。
@@ -21,12 +21,19 @@ function fakeResponse(opts: {
   ok?: boolean
   status?: number
   statusText?: string
+  location?: string
 }): unknown {
   return {
     ok: opts.ok ?? true,
     status: opts.status ?? 200,
     statusText: opts.statusText ?? 'OK',
-    headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? (opts.contentType ?? '') : null) },
+    headers: {
+      get: (k: string) => {
+        if (k.toLowerCase() === 'content-type') return opts.contentType ?? ''
+        if (k.toLowerCase() === 'location') return opts.location ?? null
+        return null
+      },
+    },
     json: async () => opts.json,
     text: async () => opts.body ?? '',
   }
@@ -34,6 +41,11 @@ function fakeResponse(opts: {
 
 // execute 的第二参数 ctx 没被用到,给个空壳。
 const dummyCtx = {} as unknown as ToolContext
+
+before(() => {
+  setDnsLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }])
+})
+after(() => setDnsLookupForTests(null))
 
 // ---------- ssrfBlocked(纯函数,导出)----------
 
@@ -95,6 +107,34 @@ test('web_fetch: ssrf 命中 → 直接失败,不发请求', async () => {
   })
 })
 
+test('web_fetch:域名解析到私网时拒绝(DNS rebinding 防线)', async () => {
+  let called = false
+  setDnsLookupForTests(async () => [{ address: '127.0.0.1', family: 4 }])
+  try {
+    await withFetch(async () => { called = true; return fakeResponse({}) }, async () => {
+      const r = await webFetchTool.execute({ url: 'https://attacker.example/' }, dummyCtx)
+      assert.equal(r.success, false)
+      assert.match(r.error ?? '', /DNS.*私网/)
+      assert.equal(called, false)
+    })
+  } finally {
+    setDnsLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }])
+  }
+})
+
+test('web_fetch:公网响应重定向到本机时拒绝,不跟随第二跳', async () => {
+  let calls = 0
+  await withFetch(async () => {
+    calls++
+    return fakeResponse({ ok: false, status: 302, statusText: 'Found', location: 'http://127.0.0.1:3210/api/config' })
+  }, async () => {
+    const r = await webFetchTool.execute({ url: 'https://attacker.example/redirect' }, dummyCtx)
+    assert.equal(r.success, false)
+    assert.match(r.error ?? '', /重定向.*不允许/)
+    assert.equal(calls, 1)
+  })
+})
+
 test('web_fetch: text/html 去标签/脚本,返回可读正文', async () => {
   const html = '<html><body><h1>标题</h1><script>alert(1)</script><p>正文一段</p></body></html>'
   await withFetch(async () => fakeResponse({ contentType: 'text/html', body: html }), async () => {
@@ -135,7 +175,7 @@ test('web_fetch: content-type 含 json → JSON.stringify 美化两空格缩进'
     const r = await webFetchTool.execute({ url: 'https://api.example.com/' }, dummyCtx)
     assert.equal(r.success, true)
     assert.equal(r.output, JSON.stringify({ a: 1, b: [2, 3] }, null, 2))
-    assert.match(r.output, /\n  "a": 1/)
+    assert.match(r.output, /\n {2}"a": 1/)
   })
 })
 
@@ -204,7 +244,7 @@ test('web_fetch: method/body/headers 透传给 fetch,默认带 User-Agent', asyn
   assert.equal(seenInit!.method, 'POST')
   assert.equal(seenInit!.body, '{"x":1}')
   const h = seenInit!.headers as Record<string, string>
-  assert.equal(h['User-Agent'], 'Mu-Agent/0.1')
+  assert.equal(h['User-Agent'], 'Shion-Agent/0.3')
   assert.equal(h['X-Test'], '1')
 })
 

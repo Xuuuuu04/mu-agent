@@ -154,6 +154,7 @@ export async function runSubagent(
     const localMessages: ChatMessage[] = [{ role: 'user', content: spec.prompt }]
     // 超时取消标志:race 到点置 true,runToolLoop 下一轮开头读它带现有结果收尾(真停,不再跑满 maxTurns)。
     let cancelled = false
+    const abortController = new AbortController()
     const sentinel = timeout(SUBAGENT_TIMEOUT_MS)
 
     let raced: ToolLoopResult | typeof TIMEOUT
@@ -167,11 +168,13 @@ export async function runSubagent(
           maxTurns,
           budgetMs: SUBAGENT_TIMEOUT_MS,
           maxTokens: SUBAGENT_MAX_TOKENS,
+          abortSignal: abortController.signal,
           // 工具执行:先校验工具名在子集内(物理隔离),再走子代理受限 registry。内部 try/catch 不抛。
           executeTool: (name, input) =>
             allowedNames.has(name)
               ? fullRegistry.execute(name, input, subCtx)
               : Promise.resolve({ success: false, output: '', error: `子代理无权调用 ${name}` }),
+          canExecuteInParallel: names => fullRegistry.areParallelSafe(names),
           // 本地累积 assistant/tool_result(不是 noop,否则第二轮只剩孤儿 tool_result → GLM 400)。
           // 中间产物仍不落主 session、不进主意识流——push 进的是函数内局部数组,跑完即 GC。
           onAssistant: (msg) => localMessages.push(msg),
@@ -190,6 +193,7 @@ export async function runSubagent(
     if (raced === TIMEOUT) {
       // 哨兵先到:置 cancelled 让后台那轮 runToolLoop 下一轮停(最坏多跑完当前这一轮 chat)。
       cancelled = true
+      abortController.abort(new Error('subagent timeout'))
       return {
         role: 'worker',
         success: false,

@@ -48,6 +48,7 @@ CLIENT_SECRET = os.environ.get("QQ_CLIENT_SECRET", "").strip()
 # 主人白名单:设了就只理这个 openid(否则任何加了 bot 的陌生人都会被当成"哥哥",
 # 既泄露隐私又污染沐的记忆)。不设保持旧行为。
 MASTER_OPENID = os.environ.get("QQ_MASTER_OPENID", "").strip()
+ALLOW_UNSAFE = os.environ.get("ALLOW_UNAUTHENTICATED_BRIDGE", "").strip() == "1"
 MU_WEBHOOK = os.environ.get("MU_WEBHOOK", "http://127.0.0.1:3210/webhook/message")
 SEND_PORT = int(os.environ.get("MU_QQ_SEND_PORT", "3212"))
 HOME = os.environ.get("MU_QQ_HOME", "/home/xpark/mu/data/qq")
@@ -203,7 +204,7 @@ async def _handle_c2c(d: dict):
     img_urls = extract_image_urls(d.get("attachments"))
     if not openid or (not content and not img_urls):
         return
-    if not is_authorized(openid, MASTER_OPENID):
+    if not is_authorized(openid, MASTER_OPENID, allow_unsafe=ALLOW_UNSAFE):
         print(f"[qq-bridge] 忽略陌生人 {openid[:8]} 的消息", flush=True)
         return
     _last_peer = openid
@@ -406,6 +407,9 @@ async def _run():
 def main():
     if not APP_ID or not CLIENT_SECRET:
         print("[qq-bridge] 缺 QQ_APP_ID / QQ_CLIENT_SECRET", flush=True)
+        sys.exit(1)
+    if not MASTER_OPENID and not ALLOW_UNSAFE:
+        print("[qq-bridge] 缺 QQ_MASTER_OPENID；默认拒绝无白名单启动。仅本地调试可设 ALLOW_UNAUTHENTICATED_BRIDGE=1", flush=True)
         sys.exit(1)
     asyncio.run(_run())
 

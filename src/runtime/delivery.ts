@@ -82,11 +82,11 @@ export function createSendRouter(deps: SendRouterDeps) {
     }
     if (source === 'autonomous') {
       deps.recordSent()
-      console.log(`\n沐(主动): ${text}${imagePath ? ` [图:${imagePath}]` : ''}\n`)
+      console.log(`\nShion(主动): ${text}${imagePath ? ` [图:${imagePath}]` : ''}\n`)
       await deps.deliverToUser(text, imagePath)
     } else if (source === 'webhook') {
       // QQ 对话中途沐又多说的一条:必须走 QQ 主动推,否则塞进 web-only outbox 用户根本看不到
-      console.log(`\n沐(追发): ${text}${imagePath ? ` [图:${imagePath}]` : ''}\n`)
+      console.log(`\nShion(追发): ${text}${imagePath ? ` [图:${imagePath}]` : ''}\n`)
       await deps.deliverToUser(text, imagePath)
     } else {
       // 其他来源(微信 iLink 主动推有 stale-token 硬限制)只能进 outbox 兜底

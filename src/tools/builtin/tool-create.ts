@@ -1,5 +1,5 @@
 import { writeFileSync, existsSync, mkdirSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join } from 'node:path'
 import type { ToolDef } from '../../core/types.js'
 
 export const toolCreateTool: ToolDef = {

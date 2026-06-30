@@ -65,6 +65,7 @@ ACCOUNT_ID = os.environ.get("WEIXIN_ACCOUNT_ID", "").strip()
 TOKEN = os.environ.get("WEIXIN_TOKEN", "").strip()
 # 主人白名单:设了就只理这个 user_id,陌生人消息直接忽略(防隐私泄露+记忆污染)
 MASTER_ID = os.environ.get("WEIXIN_MASTER_ID", "").strip()
+ALLOW_UNSAFE = os.environ.get("ALLOW_UNAUTHENTICATED_BRIDGE", "").strip() == "1"
 BASE_URL = os.environ.get("WEIXIN_BASE_URL", ILINK_BASE_URL).strip().rstrip("/")
 HOME = os.environ.get("MU_WECHAT_HOME", "/home/jump/mu/data/wechat")
 
@@ -215,7 +216,7 @@ async def _handle(msg):
     sender = str(msg.get("from_user_id") or "").strip()
     if not sender or sender == ACCOUNT_ID:
         return
-    if not is_authorized(sender, MASTER_ID):
+    if not is_authorized(sender, MASTER_ID, allow_unsafe=ALLOW_UNSAFE):
         print(f"[wechat-bridge] 忽略陌生人 {sender[:8]} 的消息", flush=True)
         return
     text = _extract_text(msg.get("item_list") or [])
@@ -360,6 +361,9 @@ async def _run():
 def main():
     if not ACCOUNT_ID or not TOKEN:
         print("[wechat-bridge] 缺 WEIXIN_ACCOUNT_ID / WEIXIN_TOKEN", flush=True)
+        sys.exit(1)
+    if not MASTER_ID and not ALLOW_UNSAFE:
+        print("[wechat-bridge] 缺 WEIXIN_MASTER_ID；默认拒绝无白名单启动。仅本地调试可设 ALLOW_UNAUTHENTICATED_BRIDGE=1", flush=True)
         sys.exit(1)
     if len(sys.argv) > 1 and sys.argv[1] == "check":
         ok = asyncio.run(_poll_once())

@@ -154,5 +154,5 @@ test('tool_create:JSON 缩进 2 空格', () => withCtx(async (dataDir, ctx) => {
     name: 'fmt', description: 'd', tool_type: 'shell', command_or_url: 'x', parameters: {},
   }, ctx)
   const raw = readFileSync(join(dataDir, 'tools', 'fmt.json'), 'utf-8')
-  assert.match(raw, /\n  "name":/)
+  assert.match(raw, /\n {2}"name":/)
 }))

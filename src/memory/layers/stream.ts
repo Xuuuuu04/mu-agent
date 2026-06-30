@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { StreamEntry } from '../../core/types.js'
+import { atomicWriteJsonSync } from '../../core/atomic-file.js'
 
 // 意识流窗口随活跃度同步放宽:06-10 哥哥把唤醒密度拉满(min 120s/max 3600s),
 // 她一天可能醒 30-50 次,48 条保住至少一整天的思绪连续性(自主活动的"接着做"靠这个)
@@ -93,7 +94,7 @@ export class StreamLayer {
   private saveEntries(entries: StreamEntry[]): void {
     const dir = dirname(this.filePath)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    writeFileSync(this.filePath, JSON.stringify(entries, null, 2), 'utf-8')
+    atomicWriteJsonSync(this.filePath, entries, 2)
   }
 
   private activityDistribution(entries: StreamEntry[]): string[] {

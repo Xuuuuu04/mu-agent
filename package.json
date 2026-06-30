@@ -1,8 +1,9 @@
 {
   "name": "mu-agent",
   "version": "0.3.0",
-  "description": "沐 — 个人自主代理",
+  "description": "Shion — 自托管的专业个人 AI 助理",
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "bin": {
     "mu": "src/cli.ts"
   },
@@ -15,7 +16,9 @@
     "mu": "tsx src/cli.ts",
     "build": "tsup src/mu.ts --format esm --dts",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.ts\"",
     "test": "tsx --test --test-force-exit \"src/**/*.test.ts\"",
+    "test:coverage": "c8 --check-coverage --lines 80 --functions 80 --branches 75 --statements 80 --reporter=text --reporter=json-summary tsx --test --test-force-exit \"src/**/*.test.ts\"",
     "test:watch": "tsx --test --watch \"src/**/*.test.ts\"",
     "test:py": "python3 -m unittest scripts.test_bridge_pure",
     "pretest": "tsc --noEmit"
@@ -27,11 +30,15 @@
     "yaml": "^2.7.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.15.0",
+    "c8": "^11.0.0",
+    "eslint": "^10.6.0",
     "tsup": "^8.4.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.62.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -1,21 +1,18 @@
-# 沐 (Mu) — 个人自主代理
+# Shion — 自托管专业个人助理
 
-一个自托管的个人 AI 代理。有人格、有持久记忆、有自己的声音、能自己决定何时醒来、能自己造工具。通过 QQ(主渠道)、微信、CLI 或 Web 跟你交互。
+Shion 是运行在个人服务器上的专业 AI 助理：能持续记忆、使用工具、跟进多步骤任务，并通过 QQ、微信、CLI 和 Web 工作台交互。
 
-不是聊天机器人,不是问答工具。是一个住在你服务器上、有连续意识感的数字伴侣。
+项目保留了 Mu/Hermes 时代的数据目录与进程名以兼容已有部署，但产品身份、行为规则和界面统一为 Shion。
 
-详细设计见 [REQUIREMENTS.md](REQUIREMENTS.md)。
+## 核心能力
 
-## 核心特性
-
-- **七层记忆**:身份 → 时间状态 → 意识流 → 关系事实 → 情景记忆(四路检索) → 技能 → 世界知识
-- **自决唤醒**:她自己决定多久后醒来继续做事,系统按心情/深夜规则 clamp,cron 兜底
-- **主动通信**:想你了、承诺到期会主动找你,带频率保护(每小时上限、深夜不扰、没回降频)
-- **工具可生长**:内置 19 个工具,能自己造新工具热加载,能连外部 MCP server
-- **她的声音**:voice_design 定制声线 + QQ 语音消息(mp3→silk),语速和情绪她按心情自己调
-- **消息级时间感**:会话内每条消息带时刻标记,她能感知"隔了三小时才回"和"秒回"的差别
-- **多模型**:Anthropic 格式(Claude/Minimax/GLM/Kimi)+ OpenAI 格式(DeepSeek),带 fallback 链
-- **抗幻觉 + 风格守卫**:时间锚定、记忆来源标注、输出去 markdown 去翻译腔
+- **任务跟进**：Task 状态机、DoD、自审、失败退避与有界自主续跑。
+- **子代理编排**：隔离的 worker/reviewer，支持受限工具、并行 fan-out、超时取消和成本上限。
+- **持久记忆**：事实、会话、情景、技能和知识；SQLite FTS、向量检索与 IMA 知识库互补。
+- **多模型路由**：Anthropic/OpenAI 两类协议、fallback、限流冷却、消息清洗和工具 schema 兼容。
+- **工具系统**：文件、搜索、网页、Shell、消息、提醒、MCP、自定义热加载工具。
+- **可靠投递**：同步窗口超时后转主动推送，失败消息进入持久 outbox。
+- **安全边界**：主人白名单、回环绑定、同源 Web、SSRF 防护、Shell 真人批准。
 
 ## 快速开始
 
@@ -24,76 +21,70 @@
 ```bash
 pnpm install
 cp config/config.example.yaml config/config.yaml
-# 编辑 config.yaml 填入 API key
+# 编辑 config.yaml，填入模型和可选工具配置
 
-pnpm start          # 启动沐(CLI + Web + Webhook)
+pnpm start
 ```
 
-打开 http://localhost:3210 是 Web 控制台。终端里直接打字跟她聊。
+默认服务监听 `127.0.0.1:3210`。远程访问 Web 工作台应使用 SSH 隧道，不要直接暴露端口。
 
-## 目录
-
-```
-src/
-  core/        agent-loop / context-assembler / scheduler / proactive / sysinfo / logger
-  memory/      七层记忆(layers/) + store(SQLite) + embedding + consolidation
-  providers/   anthropic / openai / router
-  tools/       内置工具 + 热加载 + MCP 客户端
-  gateway/     cli / webhook(QQ、微信的 Python bridge 都 POST 到这里)
-  soul/        风格守卫
-soul/          人格定义(identity/style/values)— gitignore
-data/          运行时数据(记忆/知识/技能/工具/日志/mu.db)— gitignore
-web/           Web 控制台
-config/        配置
-```
-
-## 管理命令
-
-沐在跑的时候,另开终端:
+## 常用命令
 
 ```bash
-pnpm mu status        # 看状态(心情/记忆/运行)
-pnpm mu memory <词>   # 搜记忆
-pnpm mu wake          # 手动叫醒
-pnpm mu logs          # 看日志
-pnpm mu config        # 看配置(密钥打码)
+pnpm start
+pnpm dev
+pnpm mu status
+pnpm mu memory <关键词>
+pnpm mu wake
+pnpm mu logs
+
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm test:py
+pnpm test:coverage
 ```
 
-REPL 里也能用 `/status` `/clear` `/quit`。
+运行时直接执行 `src/`，生产不依赖 `dist/`。
 
-## 测试
+## 运行架构
 
-```bash
-pnpm test         # TS 单测(node:test,零依赖;pretest 先跑 tsc --noEmit)
-pnpm test:py      # bridge 纯逻辑(python unittest,零依赖)
+生产通常由三个进程组成：
+
+| 进程 | 作用 |
+|---|---|
+| `mu` | Shion 大脑：AgentLoop、记忆、工具、Webhook 与 Web |
+| `mu-qq` | QQ 官方 Bot bridge，支持被动/主动消息与媒体 |
+| `mu-wechat` | 微信 iLink bridge，仅用于被动应答 |
+
+`mu` 名称为部署兼容标识，不代表当前产品身份。
+
+## 数据
+
+- `data/mu.db`：episodes、摘要、token 和调度日志。
+- `data/memory/`：事实、承诺、Task、会话、wake 队列和 outbox。
+- `data/tools/`：热加载工具定义。
+- `soul/`：部署私有的身份/风格/价值定义。
+
+上述目录通常被 gitignore。修改生产数据前先备份。
+
+## 调度语义
+
+- `reminder`：用户时钟，按原始到期时间执行，不受睡眠 clamp 影响。
+- `task`：Task 续跑，可与任意提醒并存。
+- `rest`：可中断的旧式休息 wake，收到普通消息时可以取消。
+
+调度状态持久化在 `data/memory/next-wakes.json`，旧 `next-wake.json` 会自动迁移。
+
+## Shell 批准
+
+只读诊断命令可直接执行。有副作用的命令只会生成批准号，不会立即运行：
+
+```text
+/approve-shell <id>
+/reject-shell <id>
 ```
 
-400+ 个 characterization test 锁住高危行为(会话裁剪切点、[WAKE]/[MOOD] 解析、cache 顺序、中文检索转义、频率保护等)。架构全景见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。部署后还有 `scripts/persona-regression.sh` 召回/人格回归。三层:单测(逻辑)→ 冒烟(接线)→ 人格回归(她还是她)。
+批准号必须由用户作为零 token 命令发送，模型无法自行批准。
 
-## 内置工具
-
-文件读写、shell、网页抓取、web_search(智谱→MiniMax→必应→DDG 四级降级)、message_send(主动发消息,可带图/表情包)、voice_send(她的声音)、schedule_wake、记忆管理(save/search/update/forget,四路检索:事实/对话/档案/她的笔记)、承诺管理、知识笔记、意识流备注、tool_create(自造工具)。
-
-## 微信接入
-
-微信走独立 Python bridge(`scripts/wechat_bridge.py`,iLink 协议,复用 hermes 的 venv)。被动应答:bridge 收消息 → POST 大脑 webhook → 拿同步回复发回。只被动不主动(iLink 主动推有 stale-token 硬限制),主动消息一律走 QQ。早期的 WeChatFerry 路线(ferry.ts/clawbot.ts)已移除。
-
-## 生产部署(xpark)
-
-```bash
-pnpm install
-# 编辑 config.yaml:填 key,建议配 embedding(BGE-M3)和 auxiliary
-pm2 start ecosystem.config.cjs
-pm2 logs mu
-```
-
-不替换现有 Hermes,独立目录独立进程。成熟后再迁移。
-
-## 配置要点
-
-- `model.auxiliary.embedding` — 配了才有语义检索,不配自动降级 FTS 关键词
-- `proactive.enabled` — 主动通信开关,默认关
-- `wechat.enabled` — 微信网关开关,默认关
-- `mcp` — 外部 MCP server 列表
-
-完整说明见 [config/config.example.yaml](config/config.example.yaml)。
+架构细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，当前规格见 [REQUIREMENTS.md](REQUIREMENTS.md)。

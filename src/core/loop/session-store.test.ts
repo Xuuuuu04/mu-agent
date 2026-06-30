@@ -8,10 +8,6 @@ import type { ChatMessage, ContentBlock } from '../types.js'
 
 const u = (text: string): ChatMessage => ({ role: 'user', content: text })
 const a = (text: string): ChatMessage => ({ role: 'assistant', content: text })
-const toolPair = (id: string): ChatMessage[] => [
-  { role: 'assistant', content: [{ type: 'tool_use', id, name: 'x', input: {} }] },
-  { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
-]
 function noOrphans(msgs: ChatMessage[]): boolean {
   const seen = new Set<string>()
   for (const m of msgs) {

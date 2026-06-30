@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 管理 CLI:连到正在跑的沐(webhook :3210)查状态/记忆/日志,或手动唤醒。
+// 管理 CLI:连到 Shion(webhook :3210)查状态/记忆/日志,或手动唤醒。
 // `mu chat` 直接拉起守护进程。其它子命令是 HTTP 客户端,不会再开一个实例。
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
@@ -44,12 +44,12 @@ async function main(): Promise<void> {
       try {
         const s = await get('/api/status') as Record<string, unknown>
         const mood = s.mood as { current?: string; reason?: string } | null
-        console.log(`沐 v${s.version}`)
+        console.log(`Shion v${s.version}`)
         console.log(`  心情: ${mood?.current ?? '?'} ${mood?.reason ? `(${mood.reason})` : ''}`)
         console.log(`  记忆: ${s.episodes} 条`)
         console.log(`  运行: ${formatUptime(s.uptime as number)} / 内存 ${s.memory_rss}MB`)
       } catch (e) {
-        die(`连不上沐(${API}),她在跑吗? ${(e as Error).message}`)
+        die(`连不上 Shion(${API})，服务是否已启动？ ${(e as Error).message}`)
       }
       break
     }
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
       if (results.length === 0) { console.log('没找到'); break }
       for (const r of results) {
         const t = new Date(r.timestamp).toLocaleString('zh-CN')
-        console.log(`[${t}] ${r.role === 'user' ? '哥哥' : '沐'}: ${r.content.slice(0, 80)}`)
+        console.log(`[${t}] ${r.role === 'user' ? '用户' : 'Shion'}: ${r.content.slice(0, 80)}`)
       }
       break
     }
@@ -88,16 +88,16 @@ async function main(): Promise<void> {
     }
 
     default:
-      console.log(`沐 管理 CLI
+      console.log(`Shion 管理 CLI
 
-  mu chat           启动沐(守护进程)
+  mu chat           启动 Shion(守护进程)
   mu status         看状态(心情/记忆/运行)
   mu memory <词>    搜记忆
   mu wake           手动叫醒
   mu logs [行数]    看日志
   mu config         看配置(密钥已打码)
 
-需要沐在跑(mu chat 或 npm start),管理命令才连得上。`)
+需要 Shion 在运行(mu chat 或 pnpm start)，管理命令才能连接。`)
   }
 }
 

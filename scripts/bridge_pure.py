@@ -19,9 +19,9 @@ def split_reply_chunks(reply, max_chunks=5):
     return chunks
 
 
-def is_authorized(sender, master):
-    """主人白名单:master 设了就只认它,没设则放行(旧行为)。空 sender 由调用方另判。"""
-    return not master or sender == master
+def is_authorized(sender, master, allow_unsafe=False):
+    """主人白名单默认 fail-closed。仅本地调试显式 allow_unsafe 才允许未配置 master。"""
+    return (bool(master) and sender == master) or (not master and allow_unsafe)
 
 
 def extract_image_urls(attachments):
@@ -34,8 +34,8 @@ def extract_image_urls(attachments):
 
 
 def ask_payload(text, sender, source):
-    """问沐的 webhook 请求体。qq/wechat 共用,只有 source 不同。"""
-    return {"text": text, "sender_name": "哥哥", "sender_id": sender, "source": source}
+    """请求 Shion 的 webhook。qq/wechat 共用,只有 source 不同。"""
+    return {"text": text, "sender_name": "用户", "sender_id": sender, "source": source}
 
 
 def build_c2c_body(text, msg_seq, reply_to=None, msg_type=0, max_len=4000):

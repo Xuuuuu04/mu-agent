@@ -1,10 +1,11 @@
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MemoryStore } from './store.js'
 import type { ModelRouter } from '../providers/router.js'
 import type { ChatMessage } from '../core/types.js'
 import { absolutizeTime } from './absolutize.js'
 import { EmbeddingService } from './embedding.js'
+import { atomicWriteFileSync } from '../core/atomic-file.js'
 
 export class MemoryConsolidation {
   private store: MemoryStore
@@ -21,7 +22,6 @@ export class MemoryConsolidation {
   }
 
   shouldConsolidate(): boolean {
-    const unconsolidated = this.store.getUnconsolidated(1)
     const count = this.store.getUnconsolidated(100).length
 
     if (count >= 50) return true
@@ -210,7 +210,7 @@ export class MemoryConsolidation {
     if (fresh.length === 0) return
     const date = new Date().toISOString().slice(0, 10)
     const newEntries = fresh.map(f => `[${date}] [consolidation] ${f}`).join('\n')
-    writeFileSync(path, existing + '\n' + newEntries + '\n', 'utf-8')
+    atomicWriteFileSync(path, existing + '\n' + newEntries + '\n')
   }
 }
 

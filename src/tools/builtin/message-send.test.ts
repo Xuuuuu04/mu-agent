@@ -46,8 +46,8 @@ function makeCtx(opts: {
 function nonQuietWindow(): { start: number; end: number } {
   const h = new Date().getHours()
   // 选一个长度为1的窗口 [h+2, h+3),它不含 h。处理跨午夜:若 h+2 或 h+3 溢出,绕回。
-  let start = (h + 2) % 24
-  let end = (h + 3) % 24
+  const start = (h + 2) % 24
+  const end = (h + 3) % 24
   // 保证 start<end(同分支)且不含 h。若 start>end(跨午夜)inQuiet=hour>=start||hour<end。
   // 跨午夜窗口很窄(只 1 小时),h 不在其中,仍判 false。两种都安全。
   return { start, end }
