@@ -1,7 +1,7 @@
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MuConfig, WakeTrigger, Commitment } from './types.js'
-import { loadMood } from '../memory/layers/mood.js'
+import { atomicWriteJsonSync } from './atomic-file.js'
 
 export interface QuietConfig { quietStart: number; quietEnd: number; maxPerHour: number }
 
@@ -39,11 +39,8 @@ export class ProactiveManager {
   private timer: ReturnType<typeof setInterval> | null = null
 
   private sentLog: number[] = []           // 主动消息时间戳,算每小时频率
-  private lastContactAt = Date.now()       // 上次哥哥说话
+  private lastContactAt = Date.now()       // 上次用户说话
   private unrepliedStreak = 0              // 连续主动未回复次数
-  private lastMissingDay = ''             // 想念触发当天计数
-  private missingCountToday = 0
-  private lastTriggerHadMissing = false    // 本次触发是否含"想念",决定 recordSent 是否计入想念配额
   private firedDay = ''                    // 承诺触发去重:同一承诺每天最多唤醒一次
   private firedCommitments = new Set<string>()
   private stateFile: string                // 频率/计数落盘，扛 pm2 重启
@@ -81,13 +78,6 @@ export class ProactiveManager {
   recordSent(): void {
     this.sentLog.push(Date.now())
     this.unrepliedStreak++
-    // 想念配额只统计"想念触发"的发送；承诺到期/自决唤醒触发的发送不该吃想念配额
-    if (this.lastTriggerHadMissing) {
-      const today = localDateStr()
-      if (this.lastMissingDay !== today) { this.lastMissingDay = today; this.missingCountToday = 0 }
-      this.missingCountToday++
-      this.lastTriggerHadMissing = false
-    }
     this.saveState()
   }
 
@@ -96,9 +86,6 @@ export class ProactiveManager {
     const reasons = this.collectReasons()
     if (reasons.length === 0) return
     if (!this.canSendNow()) return
-
-    // 记下这次触发是否含想念，recordSent 时据此决定要不要计入想念配额
-    this.lastTriggerHadMissing = reasons.some(r => r.startsWith('想哥哥了'))
 
     // 本次触发涉及的承诺记下来,今天不再为同一条反复唤醒
     // (06-09 事故:5 条过期 active 承诺让 evaluate 每 10 分钟扣一次扳机)
@@ -114,18 +101,7 @@ export class ProactiveManager {
 
   private collectReasons(): string[] {
     const reasons: string[] = []
-    const now = Date.now()
-
-    // 想念:心情 missing 且超过 2 小时没联系,每天最多 3 次
-    const mood = loadMood(this.dataDir)
-    const hoursSinceContact = (now - this.lastContactAt) / 3600_000
-    const today = localDateStr()
-    const missingToday = this.lastMissingDay === today ? this.missingCountToday : 0
-    if (mood?.current === 'missing' && hoursSinceContact > 2 && missingToday < 3) {
-      reasons.push(`想哥哥了(${Math.floor(hoursSinceContact)}小时没说话)`)
-    }
-
-    // 承诺到期:今天该做、还没做的
+    // 专业助理只因明确承诺到期主动触发；情绪和联系间隔不构成行动授权。
     for (const c of this.dueCommitments()) {
       reasons.push(`承诺到期: ${c}`)
     }
@@ -180,8 +156,6 @@ export class ProactiveManager {
       this.sentLog = Array.isArray(s.sentLog) ? s.sentLog : []
       this.lastContactAt = typeof s.lastContactAt === 'number' ? s.lastContactAt : Date.now()
       this.unrepliedStreak = s.unrepliedStreak ?? 0
-      this.lastMissingDay = s.lastMissingDay ?? ''
-      this.missingCountToday = s.missingCountToday ?? 0
       this.firedDay = s.firedDay ?? ''
       this.firedCommitments = new Set(Array.isArray(s.firedCommitments) ? s.firedCommitments : [])
     } catch { /* 状态文件坏了就当全新开始 */ }
@@ -189,15 +163,13 @@ export class ProactiveManager {
 
   private saveState(): void {
     try {
-      writeFileSync(this.stateFile, JSON.stringify({
+      atomicWriteJsonSync(this.stateFile, {
         sentLog: this.sentLog,
         lastContactAt: this.lastContactAt,
         unrepliedStreak: this.unrepliedStreak,
-        lastMissingDay: this.lastMissingDay,
-        missingCountToday: this.missingCountToday,
         firedDay: this.firedDay,
         firedCommitments: [...this.firedCommitments],
-      }))
+      })
     } catch { /* 落盘失败不影响主流程 */ }
   }
 }

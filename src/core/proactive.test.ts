@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ProactiveManager, decideCanSend } from './proactive.js'
-import type { MuConfig, WakeTrigger } from './types.js'
+import type { MuConfig } from './types.js'
 
 // ── decideCanSend 纯决策(深夜防扰/每小时上限/连续未回降频)──
 const at = (hour: number) => new Date(2026, 5, 16, hour, 0, 0).getTime()
@@ -138,23 +138,21 @@ test('onUserMessage 不动 sentLog(回复不消费每小时配额)', () => withM
   assert.equal((readState(stateFile).sentLog as number[]).length, 2)
 }))
 
-// ── 想念配额 missingCountToday:只在 lastTriggerHadMissing 时计入 ─────────
+// ── 专业助理转向:想念配额字段已移除,不再落盘 ─────────────────────────
 
-test('裸 recordSent(无想念触发)不计入想念配额', () => withManager((mgr, _d, stateFile) => {
-  // lastTriggerHadMissing 默认 false(只有 private evaluate 见到"想哥哥了"才置 true)
+test('recordSent 不再写已废弃的想念配额字段(missingCountToday/lastMissingDay)', () => withManager((mgr, _d, stateFile) => {
   mgr.recordSent()
   const s = readState(stateFile)
-  // 没经 evaluate 设标志,recordSent 不碰 missingCountToday/lastMissingDay
-  assert.equal(s.missingCountToday, 0)
-  assert.equal(s.lastMissingDay, '')
+  assert.equal('missingCountToday' in s, false, '想念配额字段已随触发逻辑移除')
+  assert.equal('lastMissingDay' in s, false)
 }))
 
 // ── 状态落盘结构:扛 pm2 重启的全字段快照 ─────────────────────────────
 
-test('saveState 落盘包含全部 7 个保护字段', () => withManager((mgr, _d, stateFile) => {
+test('saveState 落盘包含全部 5 个保护字段', () => withManager((mgr, _d, stateFile) => {
   mgr.recordSent()
   const s = readState(stateFile)
-  for (const k of ['sentLog', 'lastContactAt', 'unrepliedStreak', 'lastMissingDay', 'missingCountToday', 'firedDay', 'firedCommitments']) {
+  for (const k of ['sentLog', 'lastContactAt', 'unrepliedStreak', 'firedDay', 'firedCommitments']) {
     assert.ok(k in s, `落盘应含字段 ${k}`)
   }
   assert.ok(Array.isArray(s.sentLog))
@@ -171,10 +169,8 @@ test('start() loadState 恢复 sentLog/unrepliedStreak(重启后频率窗口不�
     sentLog: [past, past + 1],
     lastContactAt: past,
     unrepliedStreak: 2,
-    lastMissingDay: '2026-06-15',
-    missingCountToday: 1,
     firedDay: '2026-06-15',
-    firedCommitments: ['给哥哥做饭'],
+    firedCommitments: ['给用户做提醒'],
   }))
   mgr.start()
   mgr.stop()
@@ -183,8 +179,7 @@ test('start() loadState 恢复 sentLog/unrepliedStreak(重启后频率窗口不�
   const s = readState(stateFile)
   assert.equal((s.sentLog as number[]).length, 3, '恢复的 sentLog 应保留再追加')
   assert.equal(s.unrepliedStreak, 3, 'unrepliedStreak 应从恢复值 2 继续 +1')
-  assert.equal(s.lastMissingDay, '2026-06-15')
-  assert.deepEqual(s.firedCommitments, ['给哥哥做饭'])
+  assert.deepEqual(s.firedCommitments, ['给用户做提醒'])
 }))
 
 test('start() 对坏 JSON 状态文件容错:当全新开始,不抛', () => withManager((mgr, _d, stateFile) => {
@@ -204,9 +199,8 @@ test('start() 缺字段的状态文件:用默认值补齐,不抛', () => withMan
   assert.equal((s.sentLog as number[]).length, 1)
   // unrepliedStreak 从 5 恢复,+1 = 6
   assert.equal(s.unrepliedStreak, 6)
-  // 缺失的计数字段补默认
-  assert.equal(s.missingCountToday, 0)
-  assert.equal(s.lastMissingDay, '')
+  // 缺失的 firedDay 补默认空串
+  assert.equal(s.firedDay, '')
 }))
 
 test('start() sentLog 非数组时回退空数组(loadState 的 Array.isArray 守卫)', () => withManager((mgr, _d, stateFile) => {
@@ -272,4 +266,11 @@ test('写 mood.json 不影响 proactive-state(两套独立文件)', () => withMa
   // proactive-state 里没有 mood 字段
   assert.equal('current' in s, false)
   assert.equal((s.sentLog as number[]).length, 1)
+}))
+
+test('专业助理不因 missing 心情或长时间未联系主动触发', () => withManager((mgr, dataDir) => {
+  writeMood(dataDir, 'missing')
+  const internal = mgr as unknown as { lastContactAt: number; collectReasons: () => string[] }
+  internal.lastContactAt = Date.now() - 24 * 3600_000
+  assert.deepEqual(internal.collectReasons(), [])
 }))

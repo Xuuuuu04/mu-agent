@@ -10,7 +10,7 @@ export const scheduleWakeTool: ToolDef = {
     reason: { type: 'string', description: '到点唤醒的原因(到时你会看到它,据此提醒用户)' },
     activity_type: {
       type: 'string',
-      description: '可选标签: task/reminder 等',
+      description: '可选标签,默认 reminder(用户提醒,绝不被来消息打断丢失);task=自主任务续推进;rest=可被消息打断的自主休息',
       required: false as unknown as string,
     },
   },
@@ -23,7 +23,9 @@ export const scheduleWakeTool: ToolDef = {
       return { success: false, output: '', error: '调度器不可用' }
     }
     const reason = String(params.reason ?? '')
-    const activity = String(params.activity_type ?? 'rest')
+    // 默认 reminder:这个工具的本职是“给用户做定时提醒”,漏传 activity_type 时绝不能落成
+    // 可被来消息打断的 rest(那样提醒会被静默丢掉)。自主 task 续唤醒由 scheduleTaskContinuation 显式传 task。
+    const activity = String(params.activity_type ?? 'reminder')
     ctx.scheduleWake(seconds, reason, activity)
     ctx.log(`定了 ${seconds}秒后醒: ${reason}`)
     return { success: true, output: `好,${seconds}秒后醒来` }

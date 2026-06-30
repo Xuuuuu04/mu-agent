@@ -1,9 +1,9 @@
 import { watch } from 'chokidar'
 import { readFileSync, readdirSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join, basename, extname } from 'node:path'
-import type { ToolDef, ToolContext, ToolResult } from '../core/types.js'
+import type { ToolDef, ToolResult } from '../core/types.js'
 import type { ToolRegistry } from './registry.js'
-import { BLOCKED_PATTERNS } from './builtin/shell.js'
+import { runPresetShell } from './builtin/shell.js'
 import { ssrfBlocked } from './builtin/web.js'
 
 export class HotReloader {
@@ -103,20 +103,11 @@ export class HotReloader {
       description: def.description,
       parameters: def.parameters,
       async execute(params: Record<string, unknown>): Promise<ToolResult> {
-        const { execSync } = await import('node:child_process')
         let cmd = def.command
         for (const [key, val] of Object.entries(params)) {
           cmd = cmd.split(`{{${key}}}`).join(String(val))   // 全局替换：同名占位符出现多次都替
         }
-        for (const pattern of BLOCKED_PATTERNS) {
-          if (pattern.test(cmd)) return { success: false, output: '', error: `危险命令被阻止: ${cmd}` }
-        }
-        try {
-          const output = execSync(cmd, { encoding: 'utf-8', timeout: 30000, maxBuffer: 1024 * 1024 })
-          return { success: true, output: output.slice(0, 10000) }
-        } catch (err) {
-          return { success: false, output: '', error: (err as Error).message.slice(0, 500) }
-        }
+        return runPresetShell(cmd, 30_000)
       },
     }
   }

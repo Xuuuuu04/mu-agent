@@ -39,9 +39,12 @@ function scriptedRouter(responses: ChatResponse[]) {
 // 记录 scheduleNext 的假 scheduler
 function fakeScheduler() {
   const scheduled: Array<{ seconds: number; reason: string; activity_type: string }> = []
+  const wakes: Array<{ id: string; at: string; reason: string; activity_type: string; kind: 'reminder' | 'task' | 'rest'; interruptible: boolean }> = []
   return {
     scheduled,
+    wakes,
     scheduleNext: (x: { seconds: number; reason: string; activity_type: string }) => { scheduled.push(x) },
+    getScheduledWakes: () => wakes,
     getStatus: (): { sleeping: boolean; nextWake: Date | null; reason: string } =>
       ({ sleeping: false, nextWake: null, reason: '' }),
   }
@@ -228,68 +231,77 @@ test('fail-closed:bumpWakeCount 写盘失败 → 不排续唤醒(cron 兜底接)
   const s = setup([textRes('好')])
   try {
     writeTasks(s.dir, [mkTask({ id: 'task_ro' })])
-    // 把 active-tasks.json 设只读:loadTasks(读)仍 OK,saveTasks/bumpWakeCount(写)失败返 false
-    chmodSync(join(s.dir, 'memory', 'active-tasks.json'), 0o444)
+    // 原子写走"同目录临时文件 + rename"，不再碰原文件，单文件只读挡不住——必须把目录设只读，
+    // 让临时文件创建本身失败 → saveTasks 返 false → bumpWakeCount fail-closed。
+    // 注意:仅在非 root 下成立;root 有 DAC_OVERRIDE 会绕过 0o555 目录权限(合并机/aliyun 用 root 跑会假阳性挂)。
+    chmodSync(join(s.dir, 'memory'), 0o555)
     await s.loop.runCycle(userMsg('继续'))
     await tick()
     assert.equal(s.scheduler.scheduled.length, 0, '计数没落盘时不排唤醒')
   } finally {
-    try { chmodSync(join(s.dir, 'memory', 'active-tasks.json'), 0o644) } catch { /* ignore */ }
+    try { chmodSync(join(s.dir, 'memory'), 0o755) } catch { /* ignore */ }
     s.cleanup()
   }
 })
 
-// ── M3: task 续唤醒绝不覆盖用户提醒(只覆盖 pending 的 task 唤醒)──
+// ── M3: 多 wake 调度——task 与用户提醒并存,同 task wake 去重/取更早 ──
 
-test('M3:pending 是用户提醒(更晚)→ task 唤醒不覆盖', async () => {
+test('M3:pending 是用户提醒(更晚)→ task wake 独立排入,二者并存', async () => {
   const s = setup([textRes('好')])
   try {
-    // updated=现在 → task 续唤醒约 backoff(0)=600s 后;比 60s 后的用户提醒晚
     writeTasks(s.dir, [mkTask({ id: 'task_late', updated: new Date().toISOString() })])
-    // 用户 schedule_wake 排了 60s 后的提醒(reason 不是 task 前缀)
-    s.scheduler.getStatus = () => ({ sleeping: true, nextWake: new Date(Date.now() + 60_000), reason: '提醒哥哥喝水' })
+    s.scheduler.wakes.push({
+      id: 'reminder_1', at: new Date(Date.now() + 60_000).toISOString(),
+      reason: '提醒用户喝水', activity_type: 'reminder', kind: 'reminder', interruptible: false,
+    })
     await s.loop.runCycle(userMsg('继续'))
     await tick()
-    assert.equal(s.scheduler.scheduled.length, 0, '用户提醒在,task 不抢')
-    assert.equal(readTasks(s.dir)[0]!.wake_count, 0, '没排 task 就不 bump')
-  } finally { s.cleanup() }
-})
-
-test('M3:pending 是用户提醒(即使 task 唤醒更早)→ 仍不覆盖用户提醒(丢提醒 bug 的核心)', async () => {
-  const s = setup([textRes('好')])
-  try {
-    // updated 在过去 → task 续唤醒已 overdue(0s),比 1 小时后的用户提醒早。
-    // 但用户提醒(reason 非 task 前缀)绝不能被覆盖 —— 这次让位,下个 cycle 再重排 task。
-    writeTasks(s.dir, [mkTask({ id: 'task_due' })])
-    s.scheduler.getStatus = () => ({ sleeping: true, nextWake: new Date(Date.now() + 3600_000), reason: '远的用户提醒' })
-    await s.loop.runCycle(userMsg('继续'))
-    await tick()
-    assert.equal(s.scheduler.scheduled.length, 0, 'task 更早也不抢用户提醒')
-    assert.equal(readTasks(s.dir)[0]!.wake_count, 0, '没排 task 就不 bump')
-  } finally { s.cleanup() }
-})
-
-test('M3:pending 是 task 唤醒 → 取最早(task 更早就重排,覆盖旧 task 唤醒)', async () => {
-  const s = setup([textRes('好')])
-  try {
-    // task 续唤醒已 overdue(0s),比 1 小时后的旧 task 唤醒早 → 重排
-    writeTasks(s.dir, [mkTask({ id: 'task_due' })])
-    s.scheduler.getStatus = () => ({ sleeping: true, nextWake: new Date(Date.now() + 3600_000), reason: '推进任务 task_due' })
-    await s.loop.runCycle(userMsg('继续'))
-    await tick()
-    assert.equal(s.scheduler.scheduled.length, 1, '旧的是 task 唤醒且更晚,取更早的重排')
+    assert.equal(s.scheduler.scheduled.length, 1, '用户提醒不再阻塞 task wake')
     assert.equal(s.scheduler.scheduled[0]!.activity_type, 'task')
-    assert.match(s.scheduler.scheduled[0]!.reason, /推进任务 task_due/)
     assert.equal(readTasks(s.dir)[0]!.wake_count, 1)
   } finally { s.cleanup() }
 })
 
-test('M3:pending 是 task 唤醒且更早 → 不重排(取最早)', async () => {
+test('M3:pending 是用户提醒且 task overdue → task 仍排入,不饿死', async () => {
   const s = setup([textRes('好')])
   try {
-    // task 续唤醒约 600s 后;已 pending 的 task 唤醒在 60s 后(更早)→ 不重排
+    writeTasks(s.dir, [mkTask({ id: 'task_due' })])
+    s.scheduler.wakes.push({
+      id: 'reminder_1', at: new Date(Date.now() + 3600_000).toISOString(),
+      reason: '远的用户提醒', activity_type: 'reminder', kind: 'reminder', interruptible: false,
+    })
+    await s.loop.runCycle(userMsg('继续'))
+    await tick()
+    assert.equal(s.scheduler.scheduled.length, 1)
+    assert.equal(readTasks(s.dir)[0]!.wake_count, 1)
+  } finally { s.cleanup() }
+})
+
+test('M3:同 task 已有更晚 wake → 重排到更早,但不重复 bump', async () => {
+  const s = setup([textRes('好')])
+  try {
+    writeTasks(s.dir, [mkTask({ id: 'task_due' })])
+    s.scheduler.wakes.push({
+      id: 'task_1', at: new Date(Date.now() + 3600_000).toISOString(),
+      reason: '推进任务 task_due', activity_type: 'task', kind: 'task', interruptible: false,
+    })
+    await s.loop.runCycle(userMsg('继续'))
+    await tick()
+    assert.equal(s.scheduler.scheduled.length, 1, '已有 wake 更晚,重排')
+    assert.equal(s.scheduler.scheduled[0]!.activity_type, 'task')
+    assert.match(s.scheduler.scheduled[0]!.reason, /推进任务 task_due/)
+    assert.equal(readTasks(s.dir)[0]!.wake_count, 0, '已有 wake 已计数,重排不重复 bump')
+  } finally { s.cleanup() }
+})
+
+test('M3:同 task 已有更早 wake → 不重排也不重复 bump', async () => {
+  const s = setup([textRes('好')])
+  try {
     writeTasks(s.dir, [mkTask({ id: 'task_late', updated: new Date().toISOString() })])
-    s.scheduler.getStatus = () => ({ sleeping: true, nextWake: new Date(Date.now() + 60_000), reason: '推进任务 task_late' })
+    s.scheduler.wakes.push({
+      id: 'task_1', at: new Date(Date.now() + 60_000).toISOString(),
+      reason: '推进任务 task_late', activity_type: 'task', kind: 'task', interruptible: false,
+    })
     await s.loop.runCycle(userMsg('继续'))
     await tick()
     assert.equal(s.scheduler.scheduled.length, 0, '已排 task 唤醒更早,不重排')

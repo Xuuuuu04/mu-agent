@@ -41,7 +41,7 @@ import { MessageQueue } from './runtime/queue.js'
 const PROJECT_ROOT = resolve(import.meta.dirname, '..')
 
 async function main() {
-  console.log(`沐 (Mu) v${VERSION} 启动中...\n`)
+  console.log(`Shion v${VERSION} 启动中...\n`)
 
   const config = loadConfig(PROJECT_ROOT)
 
@@ -97,7 +97,7 @@ async function main() {
   const consolidation = new MemoryConsolidation(store, consolidationRouter, config.paths.data, embedding)
 
   const loop = new AgentLoop({ config, assembler, router, tools, store, scheduler, consolidation, embedding })
-  // cron 兜底据此判断唤醒链断裂(太久没有成功 cycle 就强制唤醒)
+  // cron 兜底据此判断唤醒链断裂(太久没有成功 cycle 就强制唤醒,无条件,不依赖有没有待办)
   scheduler.setLastSuccessProbe(() => loop.health.lastSuccessAt)
 
   const proactive = new ProactiveManager(config, config.paths.data)

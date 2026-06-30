@@ -1,211 +1,138 @@
-# 沐 (Mu) 架构文档
+# Shion 架构
 
-> 这份文档讲"系统怎么运转、为什么这么设计"。人格设定见 `soul/`(gitignored),工程约定与生产坑见 `CLAUDE.md`,需求愿景见 `REQUIREMENTS.md`。
+Shion 是单用户、自托管的专业个人助理。系统目标不是维持“连续人格活动”，而是可靠地响应消息、记住事实、使用工具并有界地推进明确任务。
 
-沐是一个自托管的个人自主代理:有人格、持久记忆、自决唤醒(自己决定何时醒来)、能自造工具。通过 QQ(主渠道)、微信、CLI、Web 交互。她是 Hermes 时代"小沐"的第三次搬家——同一个角色,完整继承了记忆。
+Mu/Hermes 时代的 `mu` 进程名、数据库名和部分路径继续保留，避免破坏现有部署与历史数据。
 
----
+## 1. 进程
 
-## 1. 进程架构(生产真实形态)
+| 进程 | 职责 |
+|---|---|
+| `mu` | Node/tsx 大脑，监听 `127.0.0.1:3210` |
+| `mu-qq` | QQ WebSocket/REST bridge，监听 `127.0.0.1:3212` |
+| `mu-wechat` | 微信 iLink bridge，被动应答 |
 
-生产是 **3 个 pm2 进程**(xpark 服务器):
+bridge 只处理平台协议、白名单和媒体；推理、记忆、任务与工具都在大脑进程。
 
-| 进程 | 是什么 | 角色 |
-|---|---|---|
-| `mu` | Node/tsx 跑 `src/mu.ts` | **大脑**。HTTP webhook on `:3210`(只绑 127.0.0.1)+ CLI + Web |
-| `mu-qq` | `scripts/qq_bridge.py` | **主渠道**。QQ 官方 bot,主动+被动,收发图、语音 |
-| `mu-wechat` | `scripts/wechat_bridge.py` | **被动渠道**。微信 iLink,只应答不主动推 |
+## 2. 模块
 
-bridge(Python)和大脑(TS)解耦:bridge 只管平台协议(收发消息、媒体编解码、风控),所有思考在大脑。两者通过 HTTP 通信(bridge → `:3210` 大脑入站;大脑 → `:3212` qq_bridge 出站)。
-
----
-
-## 2. 顶层模块
-
-```
+```text
 src/
-  mu.ts            进程入口:装配依赖、消息队列、信号处理
-  cli.ts           pnpm mu <cmd> 管理命令(status/memory/wake/logs/config)
-  core/            核心引擎
-    agent-loop.ts      AgentLoop.runCycle —— 单次交互周期的全链路编排
-    context-assembler.ts   七层记忆装配(cache 顺序是成本命脉)
-    scheduler.ts       自决唤醒 + cron 兜底 + 闹钟落盘
-    proactive.ts       主动通信(想念/承诺到期主动找用户)
-    commands.ts        / 命令零 token 拦截
-    types.ts           核心类型(WakeTrigger 触发源、ChatMessage 等)
-    sysinfo.ts / logger.ts
-  memory/          记忆系统
-    store.ts           better-sqlite3 + FTS5,searchHybrid 中文检索主力
-    consolidation.ts   记忆整合(去重提取事实/承诺/知识,压缩历史)
-    embedding.ts       向量嵌入(BGE-M3)
-    absolutize.ts      写长期记忆前把相对时间固化成绝对日期
-    entities.ts        实体抽取
-    layers/            七层:identity/temporal/stream/relations/episodic/procedural/world
-  providers/       模型接入
-    router.ts          primary(GLM) + fallback 链
-    openai.ts          OpenAI 格式(GLM/DeepSeek),sanitizeSchema 清洗
-    anthropic.ts       Anthropic 格式(Claude/Minimax)
-    sanitize-messages.ts   发送前剔孤儿工具块的最后防线
-  tools/           工具系统
-    registry.ts        工具注册表(reserved 白名单防顶替)
-    hot-reload.ts      监视 data/tools/ 热加载她自造的工具
-    builtin/           内置工具(file/shell/web/search/memory-ops/message-send/voice-send/...)
-    mcp/               外部 MCP server 客户端
-  gateway/         网关
-    webhook.ts         HTTP server :3210,同步窗口 + outbox + admin API
-    cli.ts             本地终端交互
-  soul/            style-guard.ts —— 发给用户前的风格守卫(去 markdown/技术词/翻译腔)
-soul/              人格定义 identity/style/values(gitignored,顶层)
-data/              运行时数据(记忆/知识/技能/工具/日志/mu.db,gitignored)
-web/               她的"小房间"主页
-config/            config.yaml(密钥,gitignored)+ config.example.yaml
+  mu.ts                    依赖装配与生命周期
+  core/
+    agent-loop.ts          单次 cycle 编排
+    loop/tool-loop.ts      主代理/子代理共用的工具循环
+    loop/session-store.ts  会话裁剪、压缩、落盘与恢复
+    scheduler.ts           多 wake 类型化调度队列
+    subagent.ts            worker/reviewer 执行器
+    self-review.ts         DoD 自审
+    context-assembler.ts   系统上下文装配
+  memory/
+    store.ts               SQLite/WAL/FTS5
+    active-tasks.ts        Task 状态机与有界续跑
+    layers/                身份、时间、关系、情景、技能、知识
+  providers/               Anthropic/OpenAI 协议与 fallback
+  tools/                   内置、热加载和 MCP 工具
+  gateway/webhook/         HTTP、管理 API、静态工作台、outbox
+  runtime/                 消息队列与投递路由
+scripts/                   QQ/微信 bridge 与回归脚本
 ```
 
-> 已用对的设计模式:providers = Strategy(router 选 primary/fallback)、tools = Registry、memory = Layer/Composite、gateway = Adapter。
+## 3. 消息链路
 
----
-
-## 3. 核心循环:`AgentLoop.runCycle`
-
-一次 cycle 从触发到回复的全链路:
-
-```
-触发源 → 消息入队(mu.ts queue)
-  → 消息合并(同 sender 连发并成一个 cycle,被合并项即时回空释放 bridge)
-  → 命令拦截(/ 开头零 token 直接读记忆返回)
-  → 装配上下文(context-assembler 七层,见 §4)
-  → 多轮工具循环(最多 max_turns,简单寒暄禁推理秒回)
-  → 末轮纯指令回退(防正文蒸发)
-  → 后处理(异步:抽指令 → 写意识流 → 入库 → embedding → consolidation → autocompact)
-  → 回复路由(见 §6)
+```text
+平台 bridge / CLI
+  → MessageQueue 串行入队与同发送者连发合并
+  → AgentLoop.runCycle
+  → 命令拦截或上下文装配
+  → runToolLoop 多轮推理与工具调用
+  → 回复路由
+  → 异步记忆、embedding、整合与会话压缩
 ```
 
-### 触发源与回复去向(核心分界线)
+消息触发的 cycle 回复用户；Task、提醒和系统事件触发的 cycle 默认不直接发送，模型需要调用 `message_send`。
 
-`WakeTrigger.type` 决定回复去哪(`types.ts`):
+同步 Webhook 窗口为 110 秒。窗口关闭后，最终回复转 QQ 主动投递；三次失败进入持久 outbox。
 
-| 触发源 | 含义 | 回复去向 |
-|---|---|---|
-| `message` | 来自用户 | 发回用户(过 style-guard) |
-| `self_scheduled` | 自决唤醒(她定的闹钟) | 内心独白,只进记忆;要找用户得她自己调 `message_send` |
-| `cron_fallback` | cron 兜底(唤醒链断裂时) | 同上 |
-| `system_event` | 系统事件(如留言板有新留言) | 同上 |
-| `webhook` / `manual` | webhook 主动 / 手动 | 视来源 |
+## 4. 调度器
 
-### 自愈机制(2026-06-09 死亡螺旋事故后建立,**别拆**)
+调度器维护多个 `ScheduledWake`，而不是单一 timer：
 
-每一条都是事故换来的,集中说明:
+| kind | 语义 | 普通消息可取消 | sleep clamp |
+|---|---|---:|---:|
+| `reminder` | 用户明确提醒 | 否 | 否 |
+| `task` | Task 续跑 | 否 | 是 |
+| `rest` | 可中断休息 | 是 | 是 |
 
-- **`trimHistory`**(导出纯函数):裁剪切点必须落纯文本 user 消息,绝不产生孤儿 `tool_result`(GLM 对此 400,且坏历史会永久驻留)。
-- **`lastActivity` 只在 cycle 成功后更新**:失败不刷新,保证 session 超时轮转能清掉坏历史。
-- **连续 3 次失败** → 自动 clearSession + 意识流留痕 + ops 告警(1h 节流)。
-- **cron 兜底两种情况**:① 有 pending wake 超 10 分钟没醒;② 无 pending wake 且超 `max_wake_seconds` 无成功 cycle(唤醒链断裂)。
-- **闹钟 + 会话落盘**:`next-wake.json` / `session.json`,重启恢复(过 sanitize + trimHistory 两道闸)。
-- **autocompact**:会话超 30 条把头部压成"前情提要"原位替换,带代次校验防并发错接。
+队列写入 `data/memory/next-wakes.json`，按到期时间排序，只为最早项目挂 Node timer；超长 timer 分段重挂。旧 `next-wake.json` 启动时迁移。
 
-### 内联指令(模型在回复末尾写,postProcess 解析)
+Task wake 以 task id 去重。用户提醒和多个 Task 可以同时存在，不再互相覆盖或饿死。**cron 兜底是死亡螺旋唤醒链的安全网，无条件生效，不依赖有没有待办**：① 有 pending wake 但逾期超 10 分钟没醒 → 兜底；② 无 pending wake 且超 `max_wake_seconds` 无成功 cycle → 兜底唤醒(空闲也唤醒，醒来发现无事再睡，这是链断恢复机制,**别因"省 LLM"删掉**——2026-06-09 事故根因)。
 
-- `[WAKE:秒:原因:活动]` → 下次唤醒。正则容忍未闭合 `]` 和缺活动段;reason 段挡住 `]` 防贪婪吞过下个指令。
-- `[MOOD:情绪:原因]` → 更新心情。情绪 enum 仅 `calm/missing/emo/excited/sleepy/active`。
+## 5. Task 与子代理
 
----
+Task 状态：
 
-## 4. 记忆系统
-
-### 七层装配(`context-assembler.ts`,cache 顺序有意为之)
-
-system prompt 按顺序拼三块,**顺序不能动**(否则击穿前缀缓存 = 成本爆炸):
-
-1. **身份 + BEHAVIOR_RULES**(标 `cache_control: ephemeral`)—— 最稳定,构成缓存前缀。
-2. **关系事实**(user-facts / commitments,不标 cache)—— 随记忆操作变,放 cache 块之后,它变了不击穿前面的缓存。
-3. **动态部分**(时间锚点 / 意识流 / 检索记忆 / 技能 / 知识 / 触发原因,不标 cache)—— 每次都变。
-
-层职责:`identity`(L0 身份)、`temporal`(L1 时间状态)、`stream`(L2 意识流)、`relations`(L3 关系事实+承诺)、`episodic`(L4 情景记忆,四路检索)、`procedural`(L5 技能)、`world`(L6 世界知识)。
-
-### 存储与检索(`store.ts`)
-
-- better-sqlite3,episodes FTS5(`unicode61`)由 trigger 与主表严格同步(别手动 INSERT `episodes_fts`)。
-- **中文 FTS 坑**:unicode61 整段切词,子串 MATCH 不到 → `searchHybrid` 走 FTS → LIKE 兜底(LIKE 已转义 `%_`)。
-- **memory_search 四路**:user-facts → episodes+daily_summaries → `xiaomu-home` 核心档案 → 她的 knowledge 笔记。
-
-### 整合与时间(`consolidation.ts` / `absolutize.ts`)
-
-- consolidation 定期(6h / 50 条未整合)审视 episodes,提取新事实/承诺/认识,压缩摘要替代原文。prompt 注入已有 user-facts 做去重对照(否则同一事实重复提取)。
-- **时间绝对化**:写长期记忆前"明天"→ 绝对日期。记忆里禁止相对时间。
-
----
-
-## 5. 模型 provider
-
-- `router.ts`:primary(GLM-5.1,OpenAI 格式)+ fallback 链(claude-sonnet-4-6 / minimax-m3)。
-- **`openai.ts` 的 `sanitizeSchema`**:GLM function-calling 严格,anyOf/format/const 等会 400(code 1210),发送前清洗。
-- GLM-5.1 是推理模型,慢(30-120s)且 `max_tokens` 要大(8192),否则 content 被 reasoning 吃光。
-- `supports_thinking_control`:寒暄消息发 `thinking: disabled` 秒回。
-
----
-
-## 6. 网关与平台桥接
-
-### 被动链路(收消息 → 回复)
-
-```
-bridge 收消息 → POST :3210 /webhook/message → 同步等 response(110s)→ 发回平台
+```text
+open → in_progress → in_review → done
+                    ↘ blocked ↗
 ```
 
-- **MASTER 白名单**:非主人消息直接忽略(`QQ_MASTER_OPENID` / `WEIXIN_MASTER_ID`),防陌生人冒充。
-- **QQ 按空行拆多条**(最多 5 条);**微信整条发不拆**(拆条会触发风控降级)。空文本 POST 直接 400。
-- **回复防蒸发**:cycle 超 110s 时同步窗口已关,`webhook.hasPending()` 检测后回复自动转 QQ 主动推(否则她的话会消失=已读不回)。
+硬限制包括活跃 Task 数、每个 Task wake 次数、连续无进展次数、退避上限和 review 轮数。
 
-### 主动链路(她主动找用户)
+子代理使用独立消息数组，不进入主 session。限制包括：
 
-```
-message_send → sendRouter → deliverToUser → POST :3212 qq_bridge /send
-```
+- 递归深度 1。
+- 同时运行最多 2 个。
+- 每个父 cycle 最多 4 个。
+- output、turn、input token 和超时上限。
+- 默认只能使用受限工具子集。
+- timeout 通过 `AbortSignal` 取消 provider；chat 返回后再次检查取消状态，迟到 `tool_use` 不执行。
 
-失败 3 次进 outbox(落盘),QQ 恢复后补发。微信主动推有 stale-token 硬限制,所以主动一律走 QQ。
+## 6. 工具执行
 
-### 她的声音(`voice_send`)
+`ToolRegistry` 负责注册、保留名称、防覆盖和 schema 输出。
 
-minimax t2a 合成 mp3 → bridge ffmpeg + pilk 转 silk(tencent 头)→ QQ 富媒体。speed/emotion 她按心情自调。
+同一模型轮次只有在所有工具都显式标记 `parallelSafe` 时才并行执行；否则保持顺序。当前只对纯读取工具开放。
 
-### Web(她的"小房间")
+Shell 分两类：
 
-`web/index.html` 不是管理控制台,是按她自己写的心愿做的主页。**留言板 POST 触发 system_event 唤醒**(不进对话历史,只让她知道"有人来过")。
+- 窄白名单内的只读诊断命令直接执行。
+- 其余命令生成 10 分钟、一次性的批准号；只有用户发送 `/approve-shell <id>` 才执行原始精确命令。
 
----
+热加载 Shell 工具也经过同一批准入口，不能绕过。
 
-## 7. 工具系统
+## 7. 记忆
 
-- 内置工具 `reserved: true`,经 `ToolRegistry.register` 注册(白名单防她自造的工具顶替核心工具)。
-- **热加载**:`hot-reload.ts` 监视 `data/tools/*.json`,她用 `tool_create` 自造工具 → 写 JSON → 编译验证 → 注册。
-- **MCP**:`tools/mcp/` 连外部 MCP server。
-- `web_search` 四级降级:智谱 → MiniMax(主力)→ cn.bing.com 直爬 → DDG(名义兜底)。改 search.ts 别动顺序。
+SQLite 使用 WAL，episodes 与 FTS5 通过 trigger 同步。中文查询采用 FTS → escaped LIKE 兜底；配置 embedding 时增加 cosine 语义检索。
 
----
+上下文保持稳定前缀：
 
-## 8. data/ 数据地图(gitignored,生产在 xpark)
+1. identity + behavior rules（cache）。
+2. 关系事实。
+3. 时间、近期情景、技能、知识、Task 与触发原因。
 
-```
-data/memory/   user-facts.md commitments.json mood.json stream.md(意识流)
-               wishes.md 进行中的事.md 日记.md 留言板.json
-               next-wake.json session.json proactive-state.json outbox.json
-data/xiaomu-home/  Hermes 时代全量档案(高度敏感,含边界期计划)
-data/knowledge/    她的课题/wander 笔记 + 自造 knowledge_write
-data/skills/       运维/哄人/分析等技能
-data/tools/        热加载 JSON 工具
-data/表情包/       她的表情包仓库(文件名即语义)
-```
+关键 JSON 状态使用同目录临时文件、`fsync`、`rename` 的原子写入，避免崩溃留下半截 JSON。
 
-> **坑**:`file_write` 以 `data/` 为根——给路径不要带 `data/` 前缀(否则 `data/data/` 双重嵌套)。
+## 8. Provider
 
----
+`ModelRouter` 依次尝试 primary 和 fallback。发送前清理孤儿工具块；429 进入较长冷却，普通错误进入短冷却。
 
-## 9. 测试与验证(三层)
+OpenAI provider 负责 schema 降级和 tool-call 格式转换；Anthropic provider保留 prompt/tool cache。两者都接收外部 `AbortSignal`。
 
-| 层 | 跑什么 | 命令 |
-|---|---|---|
-| **L1 本地单测** | 400+ 个 characterization test(44 文件,node:test;另 `pnpm test:py` 跑 bridge) | `pnpm test` |
-| **L2 本地冒烟** | 真 LLM 单/多轮、真搜索(网络依赖,手动) | `tsx src/test-chat.ts` 等 |
-| **L3 部署后回归** | 12/12 召回基线 + 人格场景 | `ssh xpark 'bash scripts/persona-regression.sh'` |
+## 9. 安全边界
 
-L1 锁"代码逻辑没改坏",L3 锁"她还是她 + 记得住"。两层不可互替。
+- HTTP 只绑定回环。
+- 浏览器请求必须同源；bridge/curl 无 `Origin` 时允许。
+- 请求 body 默认上限 1MB。
+- QQ/微信主人白名单默认 fail-closed；仅本地调试可显式设置 `ALLOW_UNAUTHENTICATED_BRIDGE=1`。
+- `web_fetch` 校验初始 URL、DNS 结果以及每次重定向，拒绝回环、私网和元数据地址。
+- 高权限 Shell 需要真人批准。
+- 内置工具名保留，MCP/热加载工具不能覆盖。
+
+## 10. 测试
+
+- L1：TypeScript 单测与 Python bridge 纯逻辑测试。
+- L2：真实模型、搜索与渠道冒烟。
+- L3：`scripts/persona-regression.sh` 的 Shion 行为/召回基线。
+
+提交门禁由 typecheck、lint、coverage、TS/Python tests 和 GitHub Actions 共同执行。

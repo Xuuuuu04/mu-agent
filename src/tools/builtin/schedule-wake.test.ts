@@ -28,11 +28,12 @@ test('schedule_wake:正常调用 → 透传 seconds/reason/activity 给回调', 
   assert.ok(logs.some(l => l.includes('定了 300秒后醒')))
 })
 
-test('schedule_wake:缺 activity_type → 默认 rest', async () => {
+test('schedule_wake:缺 activity_type → 默认 reminder(漏传不丢用户提醒)', async () => {
+  // 这工具的本职是给用户做定时提醒;漏传 activity_type 时绝不能落成可被来消息打断的 rest。
   const { ctx, calls } = makeCtx()
-  const r = await scheduleWakeTool.execute({ seconds: 60, reason: '等会找哥哥' }, ctx)
+  const r = await scheduleWakeTool.execute({ seconds: 60, reason: '提醒用户喝水' }, ctx)
   assert.equal(r.success, true)
-  assert.equal(calls[0]!.activity, 'rest')
+  assert.equal(calls[0]!.activity, 'reminder')
 })
 
 test('schedule_wake:缺 reason → 空字符串(String(undefined ?? "") )', async () => {

@@ -1,7 +1,26 @@
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
+import { readFileSync, existsSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MuConfig, MoodState, WakeTrigger } from './types.js'
 import type { MemoryStore } from '../memory/store.js'
+import { atomicWriteJsonSync } from './atomic-file.js'
+
+export type WakeKind = 'reminder' | 'task' | 'rest'
+
+export interface ScheduledWake {
+  id: string
+  at: string
+  reason: string
+  activity_type: string
+  kind: WakeKind
+  interruptible: boolean
+}
+
+interface WakeFile {
+  version: 2
+  wakes: ScheduledWake[]
+}
+
+const MAX_TIMER_MS = 2_147_000_000
 
 export class Scheduler {
   private config: MuConfig
@@ -9,8 +28,7 @@ export class Scheduler {
   private wakeTimer: ReturnType<typeof setTimeout> | null = null
   private cronTimer: ReturnType<typeof setInterval> | null = null
   private onWake: ((trigger: WakeTrigger) => void) | null = null
-  private scheduledWakeAt: Date | null = null
-  private lastWakeReason = ''
+  private wakes: ScheduledWake[] = []
   private lastSuccessProbe: (() => Date | null) | null = null
   private readonly startedAt = Date.now()
 
@@ -28,130 +46,165 @@ export class Scheduler {
     this.lastSuccessProbe = fn
   }
 
-  scheduleNext(suggested: { seconds: number; reason: string; activity_type: string }): void {
-    if (this.wakeTimer) {
-      clearTimeout(this.wakeTimer)
-      this.wakeTimer = null
+  scheduleNext(suggested: { seconds: number; reason: string; activity_type: string }): string {
+    const kind = wakeKind(suggested.activity_type)
+    // reminder 是用户时钟语义，绝不能套旧“睡多久”的 clamp；task/rest 才走活跃度规则。
+    const seconds = kind === 'reminder'
+      ? Math.max(1, suggested.seconds)
+      : this.clamp(suggested.seconds)
+    const at = new Date(Date.now() + seconds * 1000).toISOString()
+    const existing = kind === 'task'
+      ? this.wakes.find(w => w.kind === 'task' && w.reason === suggested.reason)
+      : undefined
+    const wake: ScheduledWake = existing ?? {
+      id: `wake_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      at,
+      reason: suggested.reason,
+      activity_type: suggested.activity_type,
+      kind,
+      interruptible: kind === 'rest',
     }
+    wake.at = at
+    wake.reason = suggested.reason
+    wake.activity_type = suggested.activity_type
 
-    const clamped = this.clamp(suggested.seconds)
-    this.scheduledWakeAt = new Date(Date.now() + clamped * 1000)
-    this.lastWakeReason = suggested.reason
+    if (!existing) {
+      // rest 是旧自决睡眠语义，同一时间只保留一个；提醒和不同 task 都允许并存。
+      if (kind === 'rest') this.wakes = this.wakes.filter(w => w.kind !== 'rest')
+      this.wakes.push(wake)
+    }
+    this.sortWakes()
+    this.persistWakes()
+    this.armNext()
 
     this.store.logSchedule({
-      wake_type: 'self_scheduled',
+      wake_type: kind === 'reminder' ? 'reminder' : 'self_scheduled',
       reason: `${suggested.reason} (${suggested.activity_type})`,
-      next_wake_seconds: clamped,
+      next_wake_seconds: seconds,
     })
+    console.log(`[scheduler] 新增${kind}唤醒: ${seconds}秒后 (${suggested.reason})`)
+    return wake.id
+  }
 
-    console.log(`[scheduler] 下次醒来: ${clamped}秒后 (${suggested.reason})`)
+  restoreWake(): void {
+    const modern = this.wakesPath()
+    if (existsSync(modern)) {
+      try {
+        const saved = JSON.parse(readFileSync(modern, 'utf-8')) as Partial<WakeFile>
+        this.wakes = Array.isArray(saved.wakes)
+          ? saved.wakes.filter(isScheduledWake)
+          : []
+      } catch {
+        this.wakes = []
+      }
+    } else {
+      this.migrateLegacyWake()
+    }
+    this.sortWakes()
+    this.persistWakes()
+    this.armNext()
+    if (this.wakes.length > 0) {
+      console.log(`[scheduler] 恢复 ${this.wakes.length} 个落盘唤醒`)
+    }
+  }
 
-    // 闹钟落盘:进程重启(部署/崩溃)时不丢她定好的"下次醒来"
-    this.saveWakeFile(suggested.reason, suggested.activity_type)
+  private migrateLegacyWake(): void {
+    const legacy = this.legacyWakePath()
+    if (!existsSync(legacy)) return
+    try {
+      const saved = JSON.parse(readFileSync(legacy, 'utf-8')) as {
+        at?: string
+        reason?: string
+        activity_type?: string
+      }
+      if (saved.at && saved.reason) {
+        const activity = saved.activity_type || 'rest'
+        const kind = wakeKind(activity)
+        this.wakes.push({
+          id: `wake_legacy_${Date.now().toString(36)}`,
+          at: saved.at,
+          reason: saved.reason,
+          activity_type: activity,
+          kind,
+          interruptible: kind === 'rest',
+        })
+      }
+    } catch {
+      // 旧文件坏了就丢弃，不能让启动失败。
+    } finally {
+      try { unlinkSync(legacy) } catch { /* 不存在即可 */ }
+    }
+  }
 
-    this.wakeTimer = setTimeout(() => {
-      this.wakeTimer = null
-      this.scheduledWakeAt = null
-      this.clearWakeFile()
+  private armNext(): void {
+    if (this.wakeTimer) clearTimeout(this.wakeTimer)
+    this.wakeTimer = null
+    const next = this.wakes[0]
+    if (!next) return
+    const delay = Math.max(0, Date.parse(next.at) - Date.now())
+    this.wakeTimer = setTimeout(() => this.fireDue(), Math.min(delay, MAX_TIMER_MS))
+  }
+
+  private fireDue(): void {
+    this.wakeTimer = null
+    const now = Date.now()
+    const due = this.wakes.filter(w => Date.parse(w.at) <= now + 1000)
+    if (due.length === 0) {
+      this.armNext() // 超长 timer 分段醒来重挂
+      return
+    }
+    const dueIds = new Set(due.map(w => w.id))
+    this.wakes = this.wakes.filter(w => !dueIds.has(w.id))
+    this.persistWakes()
+    this.armNext()
+    for (const wake of due) {
       this.onWake?.({
         type: 'self_scheduled',
-        reason: suggested.reason,
-        activity_type: suggested.activity_type,
+        reason: wake.reason,
+        activity_type: wake.activity_type,
       })
-    }, clamped * 1000)
-  }
-
-  // 进程启动时恢复落盘的闹钟:还没到点就重新挂上;已经过点就马上叫醒她(补觉醒来)
-  restoreWake(): void {
-    const path = join(this.config.paths.data, 'memory', 'next-wake.json')
-    if (!existsSync(path)) return
-    try {
-      const saved = JSON.parse(readFileSync(path, 'utf-8')) as { at: string; reason: string; activity_type: string }
-      const remainMs = new Date(saved.at).getTime() - Date.now()
-      if (remainMs > 5000) {
-        this.scheduledWakeAt = new Date(saved.at)
-        this.lastWakeReason = saved.reason
-        console.log(`[scheduler] 恢复落盘闹钟: ${Math.round(remainMs / 1000)}秒后 (${saved.reason})`)
-        this.wakeTimer = setTimeout(() => {
-          this.wakeTimer = null
-          this.scheduledWakeAt = null
-          this.clearWakeFile()
-          this.onWake?.({ type: 'self_scheduled', reason: saved.reason, activity_type: saved.activity_type })
-        }, remainMs)
-      } else {
-        console.log(`[scheduler] 落盘闹钟已过点,立即唤醒 (${saved.reason})`)
-        this.clearWakeFile()
-        this.onWake?.({ type: 'self_scheduled', reason: `${saved.reason}(重启后补醒)`, activity_type: saved.activity_type })
-      }
-    } catch { this.clearWakeFile() }
-  }
-
-  private saveWakeFile(reason: string, activityType: string): void {
-    try {
-      writeFileSync(
-        join(this.config.paths.data, 'memory', 'next-wake.json'),
-        JSON.stringify({ at: this.scheduledWakeAt?.toISOString(), reason, activity_type: activityType }),
-      )
-    } catch { /* 落盘失败不影响内存闹钟 */ }
-  }
-
-  private clearWakeFile(): void {
-    try { unlinkSync(join(this.config.paths.data, 'memory', 'next-wake.json')) } catch { /* 不存在就算了 */ }
+    }
   }
 
   startCronFallback(): void {
     const intervalMs = this.config.scheduler.cron_fallback_seconds * 1000
-
     this.cronTimer = setInterval(() => {
       // 情况1: 有 pending wake 但超时 10 分钟没醒(timer 丢失/进程卡过)
-      if (this.scheduledWakeAt) {
-        const overdue = Date.now() - this.scheduledWakeAt.getTime()
-        if (overdue > 10 * 60 * 1000) {
-          console.log(`[scheduler] cron 兜底: 超过 scheduled time 10 分钟未醒来`)
-          this.store.logSchedule({
-            wake_type: 'cron_fallback',
-            reason: `missed scheduled wake by ${Math.round(overdue / 60000)}min`,
-          })
-          this.scheduledWakeAt = null
-          if (this.wakeTimer) {
-            clearTimeout(this.wakeTimer)
-            this.wakeTimer = null
-          }
-          this.onWake?.({
-            type: 'cron_fallback',
-            reason: `错过了计划唤醒(${this.lastWakeReason})`,
-          })
-        }
+      const oldestDue = this.wakes.find(w => Date.parse(w.at) < Date.now() - 10 * 60 * 1000)
+      if (oldestDue) {
+        console.log(`[scheduler] cron 兜底: 唤醒 ${oldestDue.id} 已逾期 10 分钟`)
+        this.fireDue()
         return
       }
 
-      // 情况2: 唤醒链断裂 —— 没有 pending wake(cycle 失败时模型没机会输出新的 WAKE),
-      // 且超过 max_wake_seconds 没有成功 cycle。原来只查情况1,链一断兜底就成摆设(06-09 事故瘫了 10 小时)。
+      // 情况2: 唤醒链断裂 —— 没有 pending wake(cycle 失败时模型没机会输出新 WAKE)且超 max_wake_seconds
+      // 没有成功 cycle,无条件兜底唤醒。这是 06-09 死亡螺旋安全网:不依赖有没有待办,
+      // 无 task 时醒来发现无事再睡是无害健康检查;链一断时它是唯一能把她叫回来的人。
+      if (this.wakes.length > 0) return
       const last = this.lastSuccessProbe?.()
       const idleMs = Date.now() - (last?.getTime() ?? this.startedAt)
-      if (idleMs > this.config.scheduler.max_wake_seconds * 1000) {
-        const idleMin = Math.round(idleMs / 60000)
-        console.log(`[scheduler] cron 兜底: 唤醒链断裂(${idleMin}分钟无成功 cycle),强制唤醒`)
-        this.store.logSchedule({
-          wake_type: 'cron_fallback',
-          reason: `wake chain broken, no successful cycle for ${idleMin}min`,
-        })
-        this.onWake?.({
-          type: 'cron_fallback',
-          reason: `好久没正常醒来了(${idleMin}分钟),被叫起来看看`,
-        })
-      }
+      if (idleMs <= this.config.scheduler.max_wake_seconds * 1000) return
+      const idleMin = Math.round(idleMs / 60000)
+      console.log(`[scheduler] cron 兜底: 唤醒链断裂(${idleMin}分钟无成功 cycle),强制唤醒`)
+      this.store.logSchedule({
+        wake_type: 'cron_fallback',
+        reason: `wake chain broken, no successful cycle for ${idleMin}min`,
+      })
+      this.onWake?.({
+        type: 'cron_fallback',
+        reason: `好久没正常醒来了(${idleMin}分钟),被叫起来看看`,
+      })
     }, intervalMs)
   }
 
+  // 用户新消息只打断旧式“自主休息”；用户提醒和 Task 都是承诺，必须保留。
   interruptForMessage(): void {
-    if (this.wakeTimer) {
-      clearTimeout(this.wakeTimer)
-      this.wakeTimer = null
-      this.scheduledWakeAt = null
-      this.clearWakeFile()
-      console.log('[scheduler] 收到消息,打断 sleep')
-    }
+    const before = this.wakes.length
+    this.wakes = this.wakes.filter(w => !w.interruptible)
+    if (this.wakes.length === before) return
+    this.persistWakes()
+    this.armNext()
+    console.log(`[scheduler] 收到消息,取消 ${before - this.wakes.length} 个可中断唤醒`)
   }
 
   stop(): void {
@@ -165,15 +218,40 @@ export class Scheduler {
     }
   }
 
+  getScheduledWakes(): ScheduledWake[] {
+    return this.wakes.map(w => ({ ...w }))
+  }
+
+  // 保持旧 API：状态页展示最早一个 wake；完整列表由 getScheduledWakes 提供。
   getStatus(): { sleeping: boolean; nextWake: Date | null; reason: string } {
+    const next = this.wakes[0]
     return {
-      sleeping: this.scheduledWakeAt !== null,
-      nextWake: this.scheduledWakeAt,
-      reason: this.lastWakeReason,
+      sleeping: !!next,
+      nextWake: next ? new Date(next.at) : null,
+      reason: next?.reason ?? '',
     }
   }
 
-  // 采集时间/心情/config 这些副作用源,纯算法委托给 clampWake(可单测)
+  private persistWakes(): void {
+    try {
+      atomicWriteJsonSync(this.wakesPath(), { version: 2, wakes: this.wakes })
+    } catch {
+      // 落盘失败不能拖垮当前对话；内存队列仍可继续工作。
+    }
+  }
+
+  private wakesPath(): string {
+    return join(this.config.paths.data, 'memory', 'next-wakes.json')
+  }
+
+  private legacyWakePath(): string {
+    return join(this.config.paths.data, 'memory', 'next-wake.json')
+  }
+
+  private sortWakes(): void {
+    this.wakes.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+  }
+
   private clamp(seconds: number): number {
     const s = this.config.scheduler
     return clampWake(seconds, {
@@ -198,18 +276,34 @@ export class Scheduler {
   }
 }
 
-export interface ClampWakeConfig {
-  hour: number          // 当前小时(0-23)
-  nightStart: number    // 深夜起始小时
-  nightEnd: number      // 深夜结束小时
-  min: number           // 正常时段最小唤醒间隔(秒)
-  maxSleep: number      // 最大允许睡眠时长(秒),与 cron 链断检测(max_wake_seconds)解耦
-  nightMin: number      // 深夜最小唤醒间隔(秒)
-  moodSleepy: boolean   // 当前心情是否 sleepy
+function wakeKind(activityType: string): WakeKind {
+  if (activityType === 'reminder') return 'reminder'
+  if (activityType === 'task') return 'task'
+  return 'rest'
 }
 
-// 把建议的唤醒秒数夹到合理区间。纯算法,无副作用,便于单测。
-// 深夜判断支持跨午夜(如 23-7),写法对齐 proactive.ts 的 quiet 时段;sleepy 时下限抬到 ≥30 分钟。
+function isScheduledWake(value: unknown): value is ScheduledWake {
+  if (!value || typeof value !== 'object') return false
+  const w = value as Partial<ScheduledWake>
+  return typeof w.id === 'string'
+    && typeof w.at === 'string'
+    && Number.isFinite(Date.parse(w.at))
+    && typeof w.reason === 'string'
+    && typeof w.activity_type === 'string'
+    && (w.kind === 'reminder' || w.kind === 'task' || w.kind === 'rest')
+    && typeof w.interruptible === 'boolean'
+}
+
+export interface ClampWakeConfig {
+  hour: number
+  nightStart: number
+  nightEnd: number
+  min: number
+  maxSleep: number
+  nightMin: number
+  moodSleepy: boolean
+}
+
 export function clampWake(seconds: number, c: ClampWakeConfig): number {
   const isNight = c.nightStart < c.nightEnd
     ? (c.hour >= c.nightStart && c.hour < c.nightEnd)
