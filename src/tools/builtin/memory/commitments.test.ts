@@ -163,6 +163,15 @@ test('commitment_create:周期性关键词(每天)归一化为 recurring', () =>
   assert.equal(readCommitments(dataDir)[0]!.type, 'recurring')
 }))
 
+test('commitment_create:content 缺失/空白 → 拒绝,不落 undefined 空承诺', () => withCtx(async (ctx, dataDir) => {
+  // 生产日志见过 "承诺记下了: undefined":content 没传就落一条空承诺
+  const r1 = await commitmentCreateTool.execute({ type: 'one-time' }, ctx)
+  assert.equal(r1.success, false)
+  const r2 = await commitmentCreateTool.execute({ content: '   ', type: 'one-time' }, ctx)
+  assert.equal(r2.success, false)
+  assert.equal(existsSync(commitFile(dataDir)), false, '没有落任何文件')
+}))
+
 test('commitment_done:历史遗留非规范 type 也能标完成(!== recurring 兜底)', () => withCtx(async (ctx, dataDir) => {
   // 直接塞一条老数据,type 是非规范的 'onetime'
   seedCommitments(dataDir, [

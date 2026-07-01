@@ -16,6 +16,10 @@ export const commitmentCreateTool: ToolDef = {
     schedule: { type: 'string', description: '周期说明(如"每天中午"),一次性可不填', required: false as unknown as string },
   },
   async execute(params, ctx) {
+    // content 缺失时别落一条 content=undefined 的空承诺(生产日志见过"承诺记下了: undefined")
+    const content = String(params.content ?? '').trim()
+    if (!content) return { success: false, output: '', error: '承诺内容为空,没记' }
+
     const commitmentsPath = join(ctx.dataDir, 'memory', 'commitments.json')
     ensureDir(commitmentsPath)
 
@@ -31,7 +35,7 @@ export const commitmentCreateTool: ToolDef = {
 
     const commitment: Commitment = {
       id: `c${Date.now().toString(36)}`,
-      content: absolutizeTime(params.content as string),
+      content: absolutizeTime(content),
       type: normalizedType,
       due: params.due as string | undefined,
       schedule: params.schedule as string | undefined,
