@@ -75,6 +75,9 @@ export class McpClient {
     }
   }
 
+  // 单个未换行行的上限:坏掉/乱写 stdout 且从不发换行的 server 会让 buffer 无界增长,OOM 掉整个 mu 进程
+  private static readonly MAX_BUFFER = 8 * 1024 * 1024
+
   private onData(chunk: Buffer): void {
     this.buffer += chunk.toString('utf-8')
     let idx: number
@@ -91,6 +94,15 @@ export class McpClient {
           else p.resolve(msg.result)
         }
       } catch { /* 非 JSON 行忽略 */ }
+    }
+    // 抽干所有完整行后,残段仍超上限 = 该 server 协议损坏(狂写 stdout 无换行)。断开自保,别拖垮主进程。
+    if (this.buffer.length > McpClient.MAX_BUFFER) {
+      console.error(`[mcp] ${this.config.name} 单行输出超 ${McpClient.MAX_BUFFER} 字节仍无换行,判协议损坏,断开`)
+      this.buffer = ''
+      // 顺序要紧:先 disconnect 真杀进程(此刻 this.proc 还在);failAllPending 会把 proc 置 null,
+      // 若先调它,disconnect 命中 if(!proc)return 空转,狂写的子进程永不被 kill(孤儿泄漏)。
+      this.disconnect()
+      this.failAllPending('mcp 输出缓冲溢出(协议损坏)')
     }
   }
 

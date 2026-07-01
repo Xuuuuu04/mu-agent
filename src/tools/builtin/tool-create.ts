@@ -1,6 +1,7 @@
 import { writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ToolDef } from '../../core/types.js'
+import { isBlockedShellCommand } from './shell.js'
 
 export const toolCreateTool: ToolDef = {
   name: 'tool_create',
@@ -35,7 +36,13 @@ export const toolCreateTool: ToolDef = {
     }
 
     if (toolType === 'shell') {
-      definition.command = params.command_or_url as string
+      const command = params.command_or_url as string
+      // 创建期就挡掉灾难级模板(rm -rf / 管道到 shell 等),别等落盘后热加载才在执行期发现。
+      // 纵深防御:执行期 runPresetShell 还会再查一遍,参数值也在 hot-reload 里过元字符校验(含则拒执行)。
+      if (isBlockedShellCommand(command)) {
+        return { success: false, output: '', error: `命令模板含被禁止的危险操作,拒绝创建: ${command.slice(0, 120)}` }
+      }
+      definition.command = command
     } else if (toolType === 'http') {
       definition.url = params.command_or_url as string
       definition.method = (params.http_method as string) || 'GET'

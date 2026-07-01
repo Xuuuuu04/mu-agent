@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileReadTool, fileWriteTool, fileListTool, resolveSafe } from './file.js'
@@ -19,6 +19,23 @@ test('resolveSafe: 逃逸仍被挡(剥 data/ 后 ../ 也拦)', () => {
   assert.equal(resolveSafe('/d', '../etc/passwd'), null)
   assert.equal(resolveSafe('/d', 'data/../../etc'), null)
   assert.equal(resolveSafe('/d', '../d-backup/x'), null)   // 同前缀兄弟目录
+})
+test('resolveSafe: symlink 逃逸被挡(词法路径合法但真实目标在沙箱外)', () => {
+  const base = mkdtempSync(join(tmpdir(), 'mu-sbx-'))
+  const outside = mkdtempSync(join(tmpdir(), 'mu-out-'))
+  try {
+    writeFileSync(join(outside, 'secret'), 'TOP', 'utf-8')
+    // data/ 下放一个指向沙箱外目录的软链
+    symlinkSync(outside, join(base, 'escape'))
+    // 词法上 'escape/secret' 落在 base 下,但真实目标在 outside → 必须拒绝
+    assert.equal(resolveSafe(base, 'escape/secret'), null, 'symlink 指向的外部文件应被拒')
+    // 沙箱内正常文件不受影响(返回词法路径,不 realpath 化)
+    writeFileSync(join(base, 'ok.txt'), 'hi', 'utf-8')
+    assert.equal(resolveSafe(base, 'ok.txt'), join(base, 'ok.txt'))
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+  }
 })
 import type { ToolContext } from '../../core/types.js'
 

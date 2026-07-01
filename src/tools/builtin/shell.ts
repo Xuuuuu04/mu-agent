@@ -2,18 +2,27 @@ import { execSync } from 'node:child_process'
 import { basename } from 'node:path'
 import type { ToolDef, ToolResult } from '../../core/types.js'
 
-// 保留给旧热加载工具的静态拒绝规则；真正的授权边界由 requestShellExecution 统一处理。
+// 预置工具(data/tools/*.json)的静态拒绝规则。deny-list 本质拦不全(变量间接、编码绕过都能过),
+// 不是安全边界——真正的边界是 hot-reload 对参数值的元字符校验(含则拒执行,堵注入面)+ tool-create 创建期这张表的预检。
+// 这里只做纵深防御,尽量拦住最灾难的几类。大小写不敏感(Linux 命令名虽区分大小写,但保守)。
 export const BLOCKED_PATTERNS = [
-  /rm\s+-rf\s+\//,
-  /mkfs/,
-  /dd\s+if=\/dev/,
-  /shutdown/,
-  /reboot/,
-  /kill\s+-9\s+1\b/,
-  />\s*\/dev\/sd/,
-  /chmod\s+-R\s+777\s+\//,
-  /:(){ :\|:& };:/,
+  /rm\s+-[a-z]*[rf]/i,              // rm -rf / rm -r / rm -f(不止 rm -rf /)
+  /mkfs/i,
+  /dd\s+if=/i,
+  /shutdown/i,
+  /reboot/i,
+  /\bkill\s+-9\s+1\b/,
+  />\s*\/dev\/(sd|nvme|disk)/i,
+  /chmod\s+-R\s+777/i,
+  /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,   // fork bomb
+  /\|\s*(sh|bash|zsh)\b/i,          // 任意管道到 shell(curl|sh / base64 -d|sh 都覆盖)
+  /\bbase64\s+-+d\b/i,              // base64 解码(常配合 |sh 绕过明文匹配)
 ]
+
+// 命中任一灾难规则?tool-create 创建期和 runPresetShell 执行期共用,避免规则两处漂移。
+export function isBlockedShellCommand(command: string): boolean {
+  return BLOCKED_PATTERNS.some(p => p.test(command))
+}
 
 interface PendingShell {
   command: string
@@ -55,9 +64,7 @@ export function requestShellExecution(command: string, timeoutMs = 30_000): Tool
 // operator 投喂的预置工具（data/tools/*.json，如 ring_bell/phone）走这里：是受信任工具不是模型自造 shell，
 // 直接执行以保留自主性（自决唤醒/proactive 是内心独白，批准号无人接收）。只保留 BLOCKED_PATTERNS 拦灾难命令。
 export function runPresetShell(command: string, timeoutMs = 30_000): ToolResult {
-  for (const pattern of BLOCKED_PATTERNS) {
-    if (pattern.test(command)) return { success: false, output: '', error: `危险命令被阻止: ${command}` }
-  }
+  if (isBlockedShellCommand(command)) return { success: false, output: '', error: `危险命令被阻止: ${command}` }
   return runShell(command, timeoutMs)
 }
 

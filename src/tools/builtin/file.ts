@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, statSync, realpathSync } from 'node:fs'
 import { join, dirname, sep } from 'node:path'
 import type { ToolDef } from '../../core/types.js'
 
@@ -81,5 +81,26 @@ export function resolveSafe(base: string, relative: string): string | null {
   const resolved = join(base, rel)
   // startsWith(base) 缺分隔符边界，同前缀兄弟目录(data-backup)能逃出沙箱；要求严格落在 base 下
   if (resolved !== base && !resolved.startsWith(base + sep)) return null
+  // 字符串校验拦不住 symlink:data/ 下一个指向 /home/x/.ssh 的软链,词法路径合法但真实目标在沙箱外。
+  // 解析真实路径再校验一次。base 还不存在(首启/测试)时盘上没东西可逃,词法校验已足够,跳过。
+  let realBase: string
+  try {
+    realBase = realpathSync(base)
+  } catch {
+    return resolved
+  }
+  try {
+    // 对还不存在的新文件(file_write),逐级回退到最近的已存在祖先再 realpath。
+    let probe = resolved
+    while (probe !== base && !existsSync(probe)) {
+      const parent = dirname(probe)
+      if (parent === probe) break
+      probe = parent
+    }
+    const realProbe = realpathSync(probe)
+    if (realProbe !== realBase && !realProbe.startsWith(realBase + sep)) return null
+  } catch {
+    return null   // probe 存在却 realpath 失败=坏符号链接等异常,保守拒绝
+  }
   return resolved
 }
