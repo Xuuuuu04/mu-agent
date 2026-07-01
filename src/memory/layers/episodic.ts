@@ -69,23 +69,24 @@ export class EpisodicLayer {
       parts.push(`[${s.date}] ${s.summary}`)
     }
 
+    // 今天的摘要(若已生成)当"前情",但不能就此 return——摘要可能是几小时前那次整合的快照,
+    // 之后新发生的对话不在里面。仍要拼上实时 24h 窗口给最新原文,否则同一天较新的几轮会从上下文消失。
     const todaySummary = this.store.getDailySummary(today)
     if (todaySummary) {
       parts.push(todaySummary.summary)
-      return parts.join('\n')
     }
 
     const recent = this.store.getRecentEpisodes(24, 20)
-    if (recent.length === 0) return parts.length > 0 ? parts.join('\n') : null
-
-    const lines: string[] = []
-    for (const ep of recent.reverse().slice(0, 10)) {
-      const role = ep.role === 'user' ? '用户' : '我'
-      const preview = ep.content.slice(0, 80).replace(/\n/g, ' ')
-      const time = relativeTime(new Date(ep.timestamp), new Date())
-      lines.push(`[${time}] ${role}: ${preview}`)
+    if (recent.length > 0) {
+      const lines: string[] = []
+      for (const ep of recent.reverse().slice(0, 10)) {
+        const role = ep.role === 'user' ? '用户' : '我'
+        const preview = ep.content.slice(0, 80).replace(/\n/g, ' ')
+        const time = relativeTime(new Date(ep.timestamp), new Date())
+        lines.push(`[${time}] ${role}: ${preview}`)
+      }
+      if (lines.length > 0) parts.push(lines.join('\n'))
     }
-    if (lines.length > 0) parts.push(lines.join('\n'))
     return parts.length > 0 ? parts.join('\n') : null
   }
 

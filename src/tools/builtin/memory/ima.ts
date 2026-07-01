@@ -93,7 +93,10 @@ export async function searchKnowledgeIma(cfg: ImaConfig | undefined, query: stri
       end: 5,
     })
     out.push(...formatNoteHits(data, 3))
-  } catch { /* 笔记检索挂了不影响 KB */ }
+  } catch (e) {
+    // 静默返回 [] 会让"检索故障"和"确实没记忆"无法区分(半盲检索的老坑),生产里必须留痕
+    console.warn(`[ima] 笔记检索失败(非无结果): ${(e as Error).message}`)
+  }
 
   const kbs = cfg.knowledge_bases ?? []
   const kbHits = await Promise.all(
@@ -105,7 +108,8 @@ export async function searchKnowledgeIma(cfg: ImaConfig | undefined, query: stri
           cursor: '',
         })
         return formatKbHits(data, kb.name, 2)
-      } catch {
+      } catch (e) {
+        console.warn(`[ima] 知识库「${kb.name}」检索失败(非无结果): ${(e as Error).message}`)
         return [] as string[]
       }
     }),

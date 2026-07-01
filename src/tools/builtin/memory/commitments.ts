@@ -23,10 +23,16 @@ export const commitmentCreateTool: ToolDef = {
       ? JSON.parse(readFileSync(commitmentsPath, 'utf-8'))
       : []
 
+    // type 是自由文本(模型可能传 once/一次性/单次…),归一化成两类:命中周期性关键词才算 recurring,
+    // 其余一律 one-time。否则 commitment_done 精确匹配 'one-time' 会把 done 判死(承诺卡 active)。
+    const rawType = String(params.type ?? '').toLowerCase()
+    const normalizedType: 'one-time' | 'recurring' =
+      /recur|周期|定期|每|repeat/.test(rawType) ? 'recurring' : 'one-time'
+
     const commitment: Commitment = {
       id: `c${Date.now().toString(36)}`,
       content: absolutizeTime(params.content as string),
-      type: params.type as 'one-time' | 'recurring',
+      type: normalizedType,
       due: params.due as string | undefined,
       schedule: params.schedule as string | undefined,
       status: 'active',
@@ -58,8 +64,9 @@ export const commitmentDoneTool: ToolDef = {
       return { success: false, output: '', error: `找不到承诺 ${params.id}` }
     }
 
-    // 周期性承诺完成一次不置 done,只更新 last_done(下次还要做)
-    if (target.type === 'one-time') {
+    // 周期性承诺完成一次不置 done,只更新 last_done(下次还要做);其余(含历史遗留的非规范 type)一律置 done。
+    // 用 !== 'recurring' 而非 === 'one-time':老数据里 type 可能是 once/一次性 等,别让它们永远标不了完成。
+    if (target.type !== 'recurring') {
       target.status = 'done'
     }
     target.last_done = new Date().toISOString()

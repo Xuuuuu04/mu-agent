@@ -35,11 +35,12 @@ export function absolutizeTime(text: string, now = new Date()): string {
     out = out.replace(re, fmtDate(dayOffset(now, n)))
   }
 
-  // 周/月这种范围词不好固化成单日,给它加个绝对锚点而不是替换
+  // 周/月这种范围词不好固化成单日,给它加个绝对锚点而不是替换。
+  // 负向后顾排除"下下周/上上周":否则子串"下周"被误匹配,锚定到差一周的日期(宁可不处理也别错处理)。
   const monday = dayOffset(now, ((1 - now.getDay()) + 7) % 7 || 0)
   out = out
-    .replace(/下周|下星期|下礼拜/g, m => `${m}(${fmtDate(dayOffset(monday, 7))}那周)`)
-    .replace(/上周|上星期|上礼拜/g, m => `${m}(${fmtDate(dayOffset(monday, -7))}那周)`)
+    .replace(/(?<!下)(?:下周|下星期|下礼拜)/g, m => `${m}(${fmtDate(dayOffset(monday, 7))}那周)`)
+    .replace(/(?<!上)(?:上周|上星期|上礼拜)/g, m => `${m}(${fmtDate(dayOffset(monday, -7))}那周)`)
 
   return out
 }

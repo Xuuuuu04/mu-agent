@@ -45,3 +45,13 @@ test('空串和无相对词原样返回', () => {
   assert.equal(absolutizeTime('', NOW), '')
   assert.equal(absolutizeTime('普通文本', NOW), '普通文本')
 })
+
+test('下下周/上上周 不被"下周/上周"子串误锚(宁可不处理也别错一周)', () => {
+  // 修复前:"下下周" 里的 "下周" 被匹配,锚成差一周的日期
+  const a = absolutizeTime('下下周三交报告', NOW)
+  assert.doesNotMatch(a, /那周/, '下下周不该被加锚点')
+  assert.match(a, /下下周/, '原词保留')
+  const b = absolutizeTime('上上周五交的', NOW)
+  assert.doesNotMatch(b, /那周/, '上上周不该被加锚点')
+  assert.match(b, /上上周/)
+})

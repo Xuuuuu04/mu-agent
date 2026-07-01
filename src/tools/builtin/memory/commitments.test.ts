@@ -147,3 +147,27 @@ test('commitment_done:只动目标承诺,同文件其他承诺不受影响', () 
   assert.equal(rows.find(c => c.id === 'ca')!.status, 'active', 'A 不动')
   assert.equal(rows.find(c => c.id === 'cb')!.status, 'done', 'B 完成')
 }))
+
+test('commitment_create:非规范 type(如 once)归一化为 one-time,能被 done 标完成', () => withCtx(async (ctx, dataDir) => {
+  // 修复前:type='once' 原样存,commitment_done 精确匹配 'one-time' 判死 → 永远标不了完成
+  await commitmentCreateTool.execute({ content: '订蛋糕', type: 'once', due: '2026-07-05' }, ctx)
+  const created = readCommitments(dataDir)
+  assert.equal(created[0]!.type, 'one-time', 'once 被归一化成 one-time')
+  const r = await commitmentDoneTool.execute({ id: created[0]!.id }, ctx)
+  assert.equal(r.success, true)
+  assert.equal(readCommitments(dataDir)[0]!.status, 'done', '能真正置 done,不再假报成功')
+}))
+
+test('commitment_create:周期性关键词(每天)归一化为 recurring', () => withCtx(async (ctx, dataDir) => {
+  await commitmentCreateTool.execute({ content: '喝水', type: '每天', schedule: '每天' }, ctx)
+  assert.equal(readCommitments(dataDir)[0]!.type, 'recurring')
+}))
+
+test('commitment_done:历史遗留非规范 type 也能标完成(!== recurring 兜底)', () => withCtx(async (ctx, dataDir) => {
+  // 直接塞一条老数据,type 是非规范的 'onetime'
+  seedCommitments(dataDir, [
+    { id: 'cold', content: '老承诺', type: 'onetime' as unknown as Commitment['type'], status: 'active', created: '2026-06-01' },
+  ])
+  await commitmentDoneTool.execute({ id: 'cold' }, ctx)
+  assert.equal(readCommitments(dataDir)[0]!.status, 'done')
+}))
