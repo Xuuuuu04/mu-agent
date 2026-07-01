@@ -13,6 +13,11 @@ export class MemoryConsolidation {
   private dataDir: string
   private embedding: EmbeddingService | null
   private lastConsolidation: Date | null = null
+  // postProcess 不 await 就返回,两个挨得近的 cycle 会让各自的 consolidate 并发跑。
+  // appendFacts 是"读 user-facts.md → await 语义去重 → 覆盖写",两个并发 = 经典 lost-update
+  // (后写的盖掉先写新提的事实,静默丢)。这把闸串行化:第二个直接跳过,它那批 episodes 没被
+  // markConsolidated,下轮 shouldConsolidate 会再拾起,不丢。
+  private consolidating = false
 
   constructor(store: MemoryStore, router: ModelRouter, dataDir: string, embedding?: EmbeddingService | null) {
     this.store = store
@@ -37,6 +42,19 @@ export class MemoryConsolidation {
   }
 
   async consolidate(): Promise<{ factsExtracted: number; summariesCreated: number }> {
+    if (this.consolidating) {
+      console.log('[consolidation] 上一轮整合还在跑,跳过本次(episodes 未标记,下轮再拾起)')
+      return { factsExtracted: 0, summariesCreated: 0 }
+    }
+    this.consolidating = true
+    try {
+      return await this.doConsolidate()
+    } finally {
+      this.consolidating = false
+    }
+  }
+
+  private async doConsolidate(): Promise<{ factsExtracted: number; summariesCreated: number }> {
     const episodes = this.store.getUnconsolidated(100)
     if (episodes.length === 0) return { factsExtracted: 0, summariesCreated: 0 }
 

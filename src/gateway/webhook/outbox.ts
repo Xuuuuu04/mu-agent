@@ -24,8 +24,10 @@ export class Outbox {
     this.save()
   }
 
-  // 取出全部待发并清空(QQ 恢复后重投);重投失败的由调用方再 push 塞回
+  // 取出全部待发并清空(QQ 恢复后重投);重投失败的由调用方再 push 塞回。
+  // 空队列直接返回不写盘:定期补发会高频空调用,别每次都 churn 磁盘。
   take(): OutboxItem[] {
+    if (this.items.length === 0) return []
     const items = this.items
     this.items = []
     this.save()

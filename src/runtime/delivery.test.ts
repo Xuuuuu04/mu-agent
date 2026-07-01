@@ -49,16 +49,16 @@ test('deliverToUser: 带图失败,outbox 文本注明图没发出', async () => 
   assert.match(ob.items[0]!, /本想带一张图.*cat\.png/)
 })
 
-test('drainOutbox: 一条失败就塞回并停手', async () => {
+test('drainOutbox: 中途失败,失败那条及其后【全部】塞回(不丢 c)', async () => {
   const ob = fakeOutbox()
   ob.pushOutbox('a'); ob.pushOutbox('b'); ob.pushOutbox('c')
-  // 第一条成功,第二条失败 → b 塞回,c 不再尝试(但 c 已被 take 取出后丢失?按实现:take 全取出,逐条发,失败 break 不塞回剩余)
+  // a 成功,b 失败 → b 和它后面的 c 都塞回;takeOutbox 已清空队列,只塞回 b 会永久丢 c(修复前的 bug)
   const d = createDelivery('http://x', ob, fakeFetch([
     { ok: true, body: { ok: true } },   // a 成功
     { ok: false, body: {} },            // b 失败
   ]))
   await d.drainOutbox()
-  assert.ok(ob.items.includes('b'), 'b 塞回')
+  assert.deepEqual(ob.items, ['b', 'c'], 'b 和 c 都塞回,保序,c 不丢')
 })
 
 test('sendRouter: 四路路由', async () => {

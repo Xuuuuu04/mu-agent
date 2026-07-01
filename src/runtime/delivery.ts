@@ -34,14 +34,16 @@ export function createDelivery(
     if (!r.ok || !d.ok) throw new Error(d.error ?? `HTTP ${r.status}`)
   }
 
-  // QQ 恢复后把积压的 outbox 逐条补发;某条再失败就塞回并停手(QQ 还没好)
+  // QQ 恢复后把积压的 outbox 逐条补发;某条再失败,把这条和它之后【全部】还没发的塞回(QQ 又不通了)。
+  // takeOutbox 已把队列清空到内存数组,只塞回失败那一条会永久丢掉后面的——必须整段塞回。
   const drainOutbox = async (): Promise<void> => {
-    for (const item of outbox.takeOutbox()) {
+    const items = outbox.takeOutbox()
+    for (let i = 0; i < items.length; i++) {
       try {
-        await postToQQ(item.text)
-        console.log(`  [outbox] 补发成功: ${item.text.slice(0, 30)}`)
+        await postToQQ(items[i]!.text)
+        console.log(`  [outbox] 补发成功: ${items[i]!.text.slice(0, 30)}`)
       } catch {
-        outbox.pushOutbox(item.text)
+        for (let j = i; j < items.length; j++) outbox.pushOutbox(items[j]!.text)
         break
       }
     }

@@ -207,8 +207,16 @@ async function main() {
   scheduler.restoreWake()   // 重启前落盘的闹钟接回来,部署不再偷走她的睡醒
   cli.startInteractive()
 
+  // outbox 定期补发:drainOutbox 原本只在她主动发消息成功后顺带触发,若她长时间只在同步窗口
+  // 应答(不主动推),QQ 恢复后的积压会一直躺着。5 分钟兜底扫一次(空队列 take 不写盘,无 churn)。
+  const outboxDrainTimer = setInterval(() => {
+    delivery.drainOutbox().catch(e => console.error(`[outbox] 定期补发失败: ${(e as Error).message}`))
+  }, 5 * 60_000)
+  outboxDrainTimer.unref?.()
+
   const shutdown = () => {
     console.log('\n[shutdown] 正在关闭...')
+    clearInterval(outboxDrainTimer)
     hotReloader.stop()
     scheduler.stop()
     proactive.stop()
