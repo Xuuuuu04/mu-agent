@@ -145,7 +145,7 @@ test('非 429 错误也会短冷却', async () => {
   assert.deepEqual(calls, ['minimax'])
 })
 
-test('所有 provider 都冷却 → 清除冷却重试全部', async () => {
+test('所有 provider 都冷却 → 退避抛错,不立即重打(防限流风暴)', async () => {
   let glmFails = true
   const calls: string[] = []
   const glm: ModelProvider = {
@@ -162,12 +162,22 @@ test('所有 provider 都冷却 → 清除冷却重试全部', async () => {
   await assert.rejects(r.chat(baseParams), /fb HTTP 429/)
   assert.deepEqual(calls, ['glm', 'fb'])
 
-  // 下一次调用:全冷却 → 清除 → 重试全部。这次 glm 恢复了
+  // 下一次调用:全冷却中 → 退避抛"cooling down",【一个 provider 都不打】(旧行为会清冷却全重打成风暴)
   calls.length = 0
   glmFails = false
+  await assert.rejects(r.chat(baseParams), /cooling down/)
+  assert.deepEqual(calls, [], '冷却期内不该真打任何 provider')
+})
+
+test('冷却到期后 → 恢复正常路由', async () => {
+  const calls: string[] = []
+  const r = routerWith(okProvider('glm', calls))
+  // 手动把冷却设成已过期(模拟 60s 后)
+  const rr = r as unknown as { cooldowns: Map<string, number> }
+  rr.cooldowns.set('glm', Date.now() - 1)
   const res = await r.chat(baseParams)
   assert.equal(res.id, 'id-glm')
-  assert.deepEqual(calls, ['glm'])
+  assert.deepEqual(calls, ['glm'], '冷却到期后应正常打 provider')
 })
 
 test('sanitizeMessages 接入:孤儿 tool_result 被剔后仍正常路由到 primary', async () => {

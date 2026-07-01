@@ -114,10 +114,20 @@ export class WebhookGateway implements GatewayAdapter {
   }
 
   private async handleMessage(req: HttpReq, res: ServerResponse): Promise<void> {
-    const parsed = JSON.parse(await readBody(req))
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(await readBody(req))
+    } catch {
+      sendJson(res, { error: 'invalid json' }, 400)
+      return
+    }
     // 空文本直接拒收:否则会打断她的闹钟+空跑一整个 LLM cycle
-    // (06-10 一条 schema 错误的测试 POST 就这样吵醒过她)
-    if (!parsed.text || !String(parsed.text).trim()) {
+    // (06-10 一条 schema 错误的测试 POST 就这样吵醒过她)。
+    // 先确认 parsed 是对象:body 是 null/数组/裸数字时 parsed.text 会抛 TypeError 被外层 catch 成 500。
+    const obj = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      ? parsed as Record<string, unknown>
+      : null
+    if (!obj || !obj.text || !String(obj.text).trim()) {
       sendJson(res, { error: 'text is required' }, 400)
       return
     }
@@ -125,9 +135,9 @@ export class WebhookGateway implements GatewayAdapter {
     const msg: IncomingMessage = {
       id: msgId,
       source: 'webhook',
-      chat_type: parsed.chat_type || 'private',
-      sender: { id: parsed.sender_id || 'webhook', name: parsed.sender_name || '未知' },
-      content: { type: 'text', text: parsed.text || '' },
+      chat_type: obj.chat_type === 'group' ? 'group' : 'private',
+      sender: { id: (obj.sender_id as string) || 'webhook', name: (obj.sender_name as string) || '未知' },
+      content: { type: 'text', text: String(obj.text) },
       timestamp: Date.now(),
     }
 

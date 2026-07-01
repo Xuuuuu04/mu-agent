@@ -130,6 +130,10 @@ def _msg_seq() -> int:
 async def _send_c2c(openid: str, text: str, reply_to: "str | None" = None, seq: "int | None" = None) -> dict:
     """发私信。reply_to(收到的 msg_id)带上 = 被动回复(5 分钟内免费);不带 = 主动消息。
     seq: 同一 msg_id 被动回复多条时用 1-5 区分(QQ 上限 5 条)。"""
+    # build_c2c_body 会静默截到 MAX_LEN(QQ 拒收过长)。截断本身避不开(硬上限),但必须留痕——
+    # 静默丢尾正是微信那次 9 小时静默降级的失败形态(errcode=0 却丢数据)。这里让它可被日志发现。
+    if len(text) > MAX_LEN:
+        print(f"[qq-bridge] ⚠️ 单条超 {MAX_LEN} 字,尾部 {len(text) - MAX_LEN} 字被截断", flush=True)
     body = build_c2c_body(text, seq if seq else _msg_seq(), reply_to=reply_to, max_len=MAX_LEN)
     return await _api("POST", f"/v2/users/{openid}/messages", body)
 
@@ -159,7 +163,15 @@ async def _send_reply_chunks(openid: str, reply: str, msg_id: str) -> None:
     拆条规则(含 ≤1/超 5 合并)见 bridge_pure.split_reply_chunks。"""
     chunks = split_reply_chunks(reply)
     for j, ch in enumerate(chunks):
-        await _send_c2c(openid, ch, reply_to=msg_id, seq=j + 1)
+        try:
+            await _send_c2c(openid, ch, reply_to=msg_id, seq=j + 1)
+        except Exception as exc:  # noqa: BLE001
+            # 被动窗口可能已过期(图片描述耗时可把处理时间推过 QQ 的 5 分钟免费回复窗)。
+            # 降级为主动消息补发【这一条】:前面已发的 chunk 不受影响,后面的也不会因这条失败被整段丢掉。
+            # 已知窄窗口:若这条其实已投递成功、只是 _api 解析响应时抛错,补发会让这条重复。
+            # 取舍上"重复一条" 好过 "整条回复静默消失"(后者是这仓库最痛的已读不回),故接受。
+            print(f"[qq-bridge] 被动回复第{j+1}条失败({exc}),转主动补发", flush=True)
+            await _send_c2c(openid, ch, reply_to=None)
         if j < len(chunks) - 1:
             await asyncio.sleep(1.2)
 
@@ -170,7 +182,12 @@ def _describe_image(url: str) -> str:
     try:
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
             path = f.name
-        urllib.request.urlretrieve(url, path)
+        # urlretrieve 无超时:CDN 卡住会把 executor 线程占死,几张图连发能拖垮整个 bridge。
+        # 换 urlopen(timeout) + 限 10MB 读:时间和内存都有界。
+        with urllib.request.urlopen(url, timeout=20) as r:
+            data = r.read(10 * 1024 * 1024)
+        with open(path, "wb") as out_f:
+            out_f.write(data)
         out = subprocess.run(
             ["/home/xpark/.npm-global/bin/mmx", "vision", "describe", "--image", path,
              "--prompt", "描述这张图片。如果是食物:有什么菜、大概的量、主要营养构成。"
@@ -335,22 +352,31 @@ async def _send_c2c_voice(openid: str, audio_path: str, reply_to: "str | None" =
     """发语音。silk 之外的格式先转;base64 直传 files(file_type=3)再发富媒体(msg_type=7)。
     沐的声音(voice_send 工具)走这条。"""
     import base64
-    silk_path = audio_path if audio_path.endswith(".silk") else \
+    converted = not audio_path.endswith(".silk")
+    silk_path = audio_path if not converted else \
         await asyncio.get_event_loop().run_in_executor(None, _to_silk, audio_path)
-    with open(silk_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
-    up = await _api("POST", f"/v2/users/{openid}/files", {
-        "file_type": 3,  # 3=语音
-        "srv_send_msg": False,
-        "file_data": b64,
-    })
-    file_info = up.get("file_info")
-    if not file_info:
-        raise RuntimeError(f"语音上传失败: {up}")
-    body = {"content": " ", "msg_type": 7, "media": {"file_info": file_info}, "msg_seq": seq if reply_to else _msg_seq()}
-    if reply_to:
-        body["msg_id"] = reply_to
-    return await _api("POST", f"/v2/users/{openid}/messages", body)
+    try:
+        with open(silk_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        up = await _api("POST", f"/v2/users/{openid}/files", {
+            "file_type": 3,  # 3=语音
+            "srv_send_msg": False,
+            "file_data": b64,
+        })
+        file_info = up.get("file_info")
+        if not file_info:
+            raise RuntimeError(f"语音上传失败: {up}")
+        body = {"content": " ", "msg_type": 7, "media": {"file_info": file_info}, "msg_seq": seq if reply_to else _msg_seq()}
+        if reply_to:
+            body["msg_id"] = reply_to
+        return await _api("POST", f"/v2/users/{openid}/messages", body)
+    finally:
+        # 转换产生的 .silk 用完即删(源音频由调用方 voice_send 清);不删会在 /tmp 无限堆积
+        if converted:
+            try:
+                os.unlink(silk_path)
+            except OSError:
+                pass
 
 
 async def _http_send(request: "web.Request") -> "web.Response":

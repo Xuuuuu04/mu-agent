@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { ToolDef } from '../../core/types.js'
@@ -50,18 +50,24 @@ export const voiceSendTool: ToolDef = {
       const mp3Path = join(tmpdir(), `mu-voice-${Date.now().toString(36)}.mp3`)
       writeFileSync(mp3Path, Buffer.from(hex, 'hex'))
 
-      const sendUrl = ctx.config.qq?.bridge_send_url ?? 'http://127.0.0.1:3212/send'
-      const sent = await fetch(sendUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice: mp3Path }),
-        signal: AbortSignal.timeout(30000),
-      })
-      const sd = await sent.json().catch(() => ({})) as { ok?: boolean; error?: string }
-      if (!sent.ok || !sd.ok) return { success: false, output: '', error: `语音发送失败: ${sd.error ?? sent.status}` }
+      // bridge 在 HTTP 请求内同步读 mp3 转 silk,fetch 返回后就读完了 → 发完即删,别在 /tmp 无限堆积
+      // (她长期跑在内存吃紧的小机上,image_gen 有 prune,这条以前没清理)。
+      try {
+        const sendUrl = ctx.config.qq?.bridge_send_url ?? 'http://127.0.0.1:3212/send'
+        const sent = await fetch(sendUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ voice: mp3Path }),
+          signal: AbortSignal.timeout(30000),
+        })
+        const sd = await sent.json().catch(() => ({})) as { ok?: boolean; error?: string }
+        if (!sent.ok || !sd.ok) return { success: false, output: '', error: `语音发送失败: ${sd.error ?? sent.status}` }
 
-      ctx.log(`发了语音: ${text.slice(0, 30)}`)
-      return { success: true, output: '语音发出去了' }
+        ctx.log(`发了语音: ${text.slice(0, 30)}`)
+        return { success: true, output: '语音发出去了' }
+      } finally {
+        try { unlinkSync(mp3Path) } catch { /* 已被清理/不存在,忽略 */ }
+      }
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message }
     }

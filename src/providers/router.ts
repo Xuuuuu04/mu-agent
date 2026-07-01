@@ -39,10 +39,13 @@ export class ModelRouter {
     }
 
     const all = [this.primary, ...this.fallbacks]
-    let providers = all.filter(p => this.isAvailable(p.name))
+    const providers = all.filter(p => this.isAvailable(p.name))
     if (providers.length === 0) {
-      this.cooldowns.clear()
-      providers = all
+      // 全部冷却中。原来这里 clear() 后立刻重打 = 单 provider 拓扑下冷却形同虚设,反而叠加内层重试成风暴。
+      // 改为退避:抛出带最早恢复时间的错误,让调用方(cycle)这次失败(有自愈),别继续轰限流的 provider。
+      const soonest = Math.min(...all.map(p => this.cooldowns.get(p.name) ?? Date.now()))
+      const waitS = Math.max(0, Math.ceil((soonest - Date.now()) / 1000))
+      throw new Error(`all providers cooling down, retry in ${waitS}s`)
     }
 
     for (let i = 0; i < providers.length; i++) {

@@ -82,7 +82,7 @@ async function main(): Promise<void> {
       const path = resolve(PROJECT_ROOT, 'config', 'config.yaml')
       if (!existsSync(path)) die('config.yaml 不存在')
       // 本地直接读文件(含密钥),不走 HTTP
-      const text = readFileSync(path, 'utf-8').replace(/((?:api_key|token|secret|password|self_wxid):\s*)\S+/gi, '$1***')
+      const text = readFileSync(path, 'utf-8').replace(/((?:api_key|token|secret|password|self_wxid|client_id):\s*)\S+/gi, '$1***')
       console.log(text)
       break
     }
