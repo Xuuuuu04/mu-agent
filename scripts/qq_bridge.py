@@ -9,8 +9,8 @@ QQ 官方机器人(api.sgroup.qq.com):WebSocket 网关收消息 + REST 发消息
   被动: ws 收 C2C_MESSAGE_CREATE → POST 沐 webhook → 沐回复 → 带 msg_id 回(被动,免费)
   主动: 沐 message_send → POST 本 bridge /send → 不带 msg_id 发(主动消息)
 
-用 hermes 的 venv 跑(自带 aiohttp):
-  /home/xpark/ai/venvs/hermes/bin/python qq_bridge.py
+用 hermes 的 venv 跑(自带 aiohttp),路径见 start-qq.sh(可移植,不硬编码 /home/xxx):
+  /home/jump/hermes-vanilla/bin/python qq_bridge.py
 
 凭据从环境变量读(见 config/qq.env):
   QQ_APP_ID / QQ_CLIENT_SECRET
@@ -33,9 +33,12 @@ from bridge_pure import (
 def print(*args, **kw):  # noqa: A001 —— 全文件日志统一带时间戳(06-10 排查回复蒸发时无时间戳吃过亏)
     _builtins.print(f"[{_dt.now():%m-%d %H:%M:%S}]", *args, **kw)
 
+# 仓库根 = 本文件上两级(scripts/ 的父)。派生路径可移植,不硬编码 /home/xxx。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 HERMES_SP = os.environ.get(
     "HERMES_SITE_PACKAGES",
-    "/home/xpark/ai/venvs/hermes/lib/python3.12/site-packages",
+    "/home/jump/hermes-vanilla/lib/python3.12/site-packages",  # 对齐 wechat_bridge;可用 env 覆盖
 )
 if HERMES_SP not in sys.path:
     sys.path.insert(0, HERMES_SP)
@@ -51,7 +54,10 @@ MASTER_OPENID = os.environ.get("QQ_MASTER_OPENID", "").strip()
 ALLOW_UNSAFE = os.environ.get("ALLOW_UNAUTHENTICATED_BRIDGE", "").strip() == "1"
 MU_WEBHOOK = os.environ.get("MU_WEBHOOK", "http://127.0.0.1:3210/webhook/message")
 SEND_PORT = int(os.environ.get("MU_QQ_SEND_PORT", "3212"))
-HOME = os.environ.get("MU_QQ_HOME", "/home/xpark/mu/data/qq")
+# 默认从仓库根派生(旧版硬编码 /home/xpark/mu/data/qq,迁到 /home/jump 后 makedirs 会崩)
+HOME = os.environ.get("MU_QQ_HOME", os.path.join(_REPO_ROOT, "data", "qq"))
+# mmx(视觉描述)二进制路径,可 env 覆盖;旧版硬编码 /home/xpark/.npm-global
+MMX_BIN = os.environ.get("MMX_BIN", "/home/jump/.npm-global/bin/mmx")
 
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 API_BASE = "https://api.sgroup.qq.com"
@@ -189,7 +195,7 @@ def _describe_image(url: str) -> str:
         with open(path, "wb") as out_f:
             out_f.write(data)
         out = subprocess.run(
-            ["/home/xpark/.npm-global/bin/mmx", "vision", "describe", "--image", path,
+            [MMX_BIN, "vision", "describe", "--image", path,
              "--prompt", "描述这张图片。如果是食物:有什么菜、大概的量、主要营养构成。"
                          "如果是截图:界面内容和上面的文字。其他:你看到了什么。简洁中文,别用markdown。",
              "--quiet"],
