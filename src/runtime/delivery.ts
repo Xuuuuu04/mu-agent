@@ -1,5 +1,7 @@
-// 主动消息投递:发 QQ bridge + outbox 兜底重投 + sendRouter 路由。
-// 用结构化接口注入依赖,便于单测(mock fetch / outbox)。
+// 主动消息投递:POST 到当前活跃渠道的 bridge /send(QQ 或微信,由 mu.ts 传入的 url 决定)
+// + outbox 兜底重投 + sendRouter 路由。用结构化接口注入依赖,便于单测(mock fetch / outbox)。
+// 注意:函数名保留 postToQQ 是历史遗留;实际 POST 到的是 createDelivery 传入的 channelSendUrl
+// (微信场景就是 wechat_bridge 的 /send,与 qq_bridge 同 shape {text, image?})。
 import type { OutgoingMessage } from '../core/types.js'
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -53,7 +55,7 @@ export function createDelivery(
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         await postToQQ(text, imagePath)
-        console.log(`  [deliver] 主动消息已发 QQ${imagePath ? '(带图)' : ''}`)
+        console.log(`  [deliver] 主动消息已发渠道${imagePath ? '(带图)' : ''}`)
         await drainOutbox()   // 这次通了,顺手把之前积压的也补发掉
         return
       } catch (e) {

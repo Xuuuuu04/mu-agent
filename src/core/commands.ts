@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MemoryStore } from '../memory/store.js'
 import type { Scheduler } from './scheduler.js'
-import type { Commitment, MoodState } from './types.js'
+import type { Commitment, MoodState, Position } from './types.js'
 import { relativeTime } from '../memory/layers/temporal.js'
 import { loadTasks } from '../memory/active-tasks.js'
 import { approveShellRequest, rejectShellRequest } from '../tools/builtin/shell.js'
@@ -44,6 +44,10 @@ export function tryCommand(text: string, deps: CommandDeps): string | null {
       return moodText(deps)
     case 'todo': case 'commitments':
       return todoText(deps)
+    case '持仓': case 'portfolio': case 'gp':
+      return portfolioText(deps)
+    case '盯盘': case 'watchdog':
+      return watchdogText(deps)
     case 'tasks': case 'task':
       return tasksText(deps)
     case 'memory': case 'mem':
@@ -64,6 +68,8 @@ function helpText(): string {
     '/status — 看我的状态(心情/记忆/下次醒)',
     '/mood — 我现在什么心情',
     '/todo — 答应你的事都在这',
+    '/持仓 — 当前真实持仓(止损止盈)',
+    '/盯盘 — watchdog 状态 + 最近告警',
     '/tasks — 正在跟进的任务',
     '/memory 关键词 — 翻翻我记得的事',
     '/approve-shell ID — 批准一条待执行的高风险 Shell 命令',
@@ -119,6 +125,42 @@ function todoText(deps: CommandDeps): string {
   return '待办:\n' + lines.join('\n')
 }
 
+// /盯盘 watchdog 状态(今日已告警)+ alerts.log 最近 10 条
+function watchdogText(deps: CommandDeps): string {
+  const lines: string[] = []
+  const stPath = join(deps.dataDir, 'memory', 'watchdog-state.json')
+  if (existsSync(stPath)) {
+    try {
+      const st = JSON.parse(readFileSync(stPath, 'utf-8')) as { date: string; fired: string[] }
+      lines.push(`今日(${st.date})已告警 ${st.fired.length} 次:${st.fired.length ? st.fired.join(', ') : '无'}`)
+    } catch { /* 坏了跳 */ }
+  } else {
+    lines.push('watchdog 还没跑过(可能未启用 / 非交易时段)')
+  }
+  const alertPath = join(deps.dataDir, 'memory', 'alerts.log')
+  if (existsSync(alertPath)) {
+    const all = readFileSync(alertPath, 'utf-8').trim().split('\n').filter(Boolean)
+    const recent = all.slice(-10)
+    if (recent.length > 0) {
+      lines.push('', '最近告警:')
+      lines.push(...recent)
+    }
+  }
+  return lines.length > 0 ? lines.join('\n') : 'watchdog 无告警记录'
+}
+
+// /持仓 列真实持仓(portfolio.json 的 active 项),带止损止盈 + 浮亏提醒
+function portfolioText(deps: CommandDeps): string {
+  const positions = activePositions(deps.dataDir)
+  if (positions.length === 0) return '当前没有记录真实持仓。\n(告诉我"买了 X N股 成本Y 止损Z",我记下来)'
+  const lines = positions.map(p => {
+    const sl = p.stop_loss != null ? ` 止损${p.stop_loss}` : ' 未设止损'
+    const tp = p.take_profit != null ? ` 止盈${p.take_profit}` : ''
+    return `- [${p.id}] ${p.code} ${p.name} ${p.qty}股@${p.cost}${sl}${tp}`
+  })
+  return '真实持仓:\n' + lines.join('\n')
+}
+
 // /tasks 列活跃 task(open/in_progress/in_review),区别于 /todo 的扁平承诺
 function tasksText(deps: CommandDeps): string {
   const tasks = loadTasks(deps.dataDir).tasks.filter(t => t.status !== 'done' && t.status !== 'blocked')
@@ -160,6 +202,15 @@ function activeCommitments(dataDir: string): Commitment[] {
   try {
     const all = JSON.parse(readFileSync(path, 'utf-8')) as Commitment[]
     return all.filter(c => c.status === 'active')
+  } catch { return [] }
+}
+
+function activePositions(dataDir: string): Position[] {
+  const path = join(dataDir, 'memory', 'portfolio.json')
+  if (!existsSync(path)) return []
+  try {
+    const all = JSON.parse(readFileSync(path, 'utf-8')) as Position[]
+    return all.filter(p => p.status === 'active')
   } catch { return [] }
 }
 

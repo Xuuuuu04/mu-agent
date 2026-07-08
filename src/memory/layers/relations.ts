@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Commitment } from '../../core/types.js'
+import type { Commitment, Position } from '../../core/types.js'
 
 export class RelationsLayer {
   private dataDir: string
@@ -30,6 +30,19 @@ export class RelationsLayer {
       }
     }
 
+    const positions = this.loadActivePositions()
+    if (positions.length > 0) {
+      parts.push('')
+      parts.push('--- 当前持仓(真实账户,非模拟盘) ---')
+      for (const p of positions) {
+        const sl = p.stop_loss != null ? ` 止损${p.stop_loss}` : ''
+        const tp = p.take_profit != null ? ` 止盈${p.take_profit}` : ''
+        const note = p.note ? ` // ${p.note}` : ''
+        parts.push(`- [${p.id}] ${p.code} ${p.name} ${p.qty}股@${p.cost}${sl}${tp}${note}`)
+      }
+      parts.push('(watchdog 盘中会按止损/止盈监控这些票;改仓位用 portfolio_* 工具)')
+    }
+
     if (parts.length === 0) {
       return '(还没有记住关于用户的事实)'
     }
@@ -55,6 +68,17 @@ export class RelationsLayer {
     try {
       const all = JSON.parse(readFileSync(path, 'utf-8')) as Commitment[]
       return all.filter(c => c.status === 'active')
+    } catch {
+      return []
+    }
+  }
+
+  private loadActivePositions(): Position[] {
+    const path = join(this.dataDir, 'memory', 'portfolio.json')
+    if (!existsSync(path)) return []
+    try {
+      const all = JSON.parse(readFileSync(path, 'utf-8')) as Position[]
+      return all.filter(p => p.status === 'active')
     } catch {
       return []
     }

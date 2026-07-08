@@ -21,6 +21,12 @@ export interface MuConfig {
       enabled?: boolean
       calendar_path?: string           // 交易日历 JSON,默认 data/memory/trade-calendar.json
       market_min_wake_seconds?: number // 盘中(morning/afternoon 等)最短唤醒间隔,叠加成更紧的下限
+      // 自主盯盘 watchdog:盘中定时查持仓现价,触止损/止盈主动告警(确定性,不烧 LLM)。
+      watchdog?: {
+        enabled?: boolean
+        interval_seconds?: number      // tick 间隔,默认 300(非交易时段 tick 自动跳过)
+        near_pct?: number              // 接近缓冲,默认 0.01(距线 ≤1% 预警)
+      }
     }
   }
   agent: {
@@ -239,6 +245,21 @@ export interface Commitment {
   definition_of_done?: string
   review_status?: 'passed' | 'failed'  // failed = 撞 2 轮上界强制放行,留痕
   review_rounds?: number               // 已自审轮数,上界 MAX_REVIEW_ROUNDS
+}
+
+// ── 持仓(真实账户,用户手动维护;区别于 mx_moni 模拟盘)──
+// watchdog 据此拉现价比 stop_loss/take_profit;relations 层每轮注入上下文。
+export interface Position {
+  id: string                  // `p${base36}`
+  code: string                // 证券代码,如 '003816'
+  name: string                // 名称,如 '中国广核'
+  qty: number                 // 股数
+  cost: number                // 持仓成本价(加仓时按加权平均合并)
+  stop_loss?: number          // 止损价
+  take_profit?: number        // 止盈价
+  note?: string
+  status: 'active' | 'closed'
+  updated: string             // ISO
 }
 
 // ── Task(多步骤、可 review、可跨多次自唤醒推进;区别于扁平的 Commitment)──

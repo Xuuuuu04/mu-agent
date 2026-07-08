@@ -7,6 +7,7 @@ import { ContextAssembler } from './core/context-assembler.js'
 import { Scheduler } from './core/scheduler.js'
 import { ModelRouter } from './providers/router.js'
 import { ProactiveManager } from './core/proactive.js'
+import { WatchdogManager, parseIfindPrices } from './core/watchdog.js'
 import { log } from './core/logger.js'
 import { ToolRegistry } from './tools/registry.js'
 import { MemoryStore } from './memory/store.js'
@@ -24,6 +25,7 @@ import { scheduleWakeTool } from './tools/builtin/schedule-wake.js'
 import {
   memorySaveTool, memorySearchTool, memoryUpdateTool, memoryForgetTool, knowledgeWriteTool,
   commitmentCreateTool, commitmentDoneTool, streamNoteTool, diaryWriteTool,
+  portfolioAddTool, portfolioUpdateTool, portfolioRemoveTool,
 } from './tools/builtin/memory-ops.js'
 import { toolCreateTool } from './tools/builtin/tool-create.js'
 import { voiceSendTool } from './tools/builtin/voice-send.js'
@@ -69,6 +71,7 @@ async function main() {
     messageSendTool, scheduleWakeTool, voiceSendTool, imageGenTool,
     memorySaveTool, memorySearchTool, memoryUpdateTool, memoryForgetTool, knowledgeWriteTool,
     commitmentCreateTool, commitmentDoneTool, streamNoteTool, diaryWriteTool, toolCreateTool,
+    portfolioAddTool, portfolioUpdateTool, portfolioRemoveTool,
     taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool,
     spawnSubagentTool, spawnParallelTool]) {
     tools.register(t, { reserved: true })
@@ -167,8 +170,30 @@ async function main() {
   // 哥哥的主动消息通道 —— 走 QQ(沐主动找哥哥发到 QQ)。
   // 微信只做被动应答(哥哥发、沐回),不主动推:iLink 主动推送有 stale-token 硬限制,
   // 而 QQ 官方 bot 的 C2C 主动私信原生支持,所以主动一律走 QQ bridge。
-  const qqSendUrl = config.qq?.bridge_send_url ?? 'http://127.0.0.1:3212/send'
-  const delivery = createDelivery(qqSendUrl, webhook)
+  // 主动消息投递渠道:微信优先(配置了 wechat.bridge_send_url 就走微信 bridge /send),否则 QQ bridge。
+  const channelSendUrl = config.wechat?.bridge_send_url ?? config.qq?.bridge_send_url ?? 'http://127.0.0.1:3212/send'
+  const delivery = createDelivery(channelSendUrl, webhook)
+
+  // A 股盯盘 watchdog:盘中定时查持仓现价,触止损/止盈主动告警(确定性,不烧 LLM)。
+  // 取价走 iFind stock_highfreq_quotes(structured real_time);未接 iFind 则取不到价、静默跳过。
+  const aStock = config.scheduler.a_stock
+  const watchdogCfg = aStock?.watchdog
+  const watchdog = new WatchdogManager({
+    dataDir: config.paths.data,
+    deliverToUser: delivery.deliverToUser,
+    calendarPath: aStock?.calendar_path,
+    intervalSec: watchdogCfg?.interval_seconds,
+    nearPct: watchdogCfg?.near_pct,
+    fetchPrices: async (codes) => {
+      const tool = tools.get('hexin-ifind-stock__stock_highfreq_quotes')
+      if (!tool) return new Map()
+      const r = await tool.execute(
+        { symbols: codes.join(','), data_mode: 'real_time', indicators: '最新价' },
+        { config, dataDir: config.paths.data, log: () => {} } as never,
+      )
+      return parseIfindPrices(r.output)
+    },
+  })
 
   // 运维告警:agent-loop 连续失败自愈时直接 POST QQ bridge 通知哥哥。
   // 不走 LLM(模型全挂时才需要它)、不走 deliverToUser(那条路失败会塞 outbox 当成她的话)
@@ -201,6 +226,9 @@ async function main() {
   // 主动通信:满足条件就塞一个 system_event 触发,让沐自己决定要不要找哥哥
   proactive.setTrigger((trigger) => messageQueue.push(trigger))
   proactive.start()
+
+  // A 股 watchdog(开关在 config.scheduler.a_stock.watchdog.enabled)。盘中触发线告警走 delivery(微信)。
+  if (watchdogCfg?.enabled) watchdog.start()
 
   loop.restoreSession()     // 重启前落盘的会话接回来,部署不再丢她的短期记忆
   scheduler.startCronFallback()

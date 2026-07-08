@@ -151,3 +151,44 @@ test('facts + commitments 同时存在,顺序:事实在前承诺在后', () => {
     assert.ok(out.indexOf('哥哥的事') < out.indexOf('我的承诺'))
   })
 })
+
+// ── 持仓注入(A 股垂直化)──
+function withPortfolio(positions: unknown, fn: (dataDir: string) => void): void {
+  const dataDir = mkdtempSync(join(tmpdir(), 'mu-rel-port-'))
+  try {
+    const memDir = join(dataDir, 'memory')
+    mkdirSync(memDir, { recursive: true })
+    writeFileSync(join(memDir, 'portfolio.json'), JSON.stringify(positions), 'utf-8')
+    fn(dataDir)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+}
+
+test('portfolio: 只装配 active 持仓,带 code/name/qty/cost/止损止盈', () => {
+  withPortfolio([
+    { id: 'p1', code: '003816', name: '中国广核', qty: 100, cost: 3.87, stop_loss: 3.70, take_profit: 4.10, status: 'active', updated: '2026-07-08T00:00:00.000Z' },
+    { id: 'p2', code: '688012', name: '中微公司', qty: 50, cost: 400, status: 'active', updated: '2026-07-08T00:00:00.000Z' },
+    { id: 'p3', code: '601398', name: '工商银行', qty: 200, cost: 5.0, status: 'closed', updated: '2026-07-01T00:00:00.000Z' },
+  ], (dir) => {
+    const out = new RelationsLayer(dir).assemble()
+    assert.match(out, /当前持仓\(真实账户,非模拟盘\)/)
+    assert.match(out, /003816 中国广核 100股@3.87 止损3.7 止盈4.1/)
+    assert.match(out, /688012 中微公司 50股@400\b/)  // 无止损止盈,行尾
+    assert.doesNotMatch(out, /工商银行/)             // closed 不注入
+    assert.match(out, /watchdog 盘中会按止损/)
+  })
+})
+
+test('portfolio: 坏 JSON → 当无持仓,不崩', () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'mu-rel-portbad-'))
+  try {
+    const memDir = join(dataDir, 'memory')
+    mkdirSync(memDir, { recursive: true })
+    writeFileSync(join(memDir, 'portfolio.json'), '{坏的', 'utf-8')
+    const out = new RelationsLayer(dataDir).assemble()
+    assert.doesNotMatch(out, /当前持仓/)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
