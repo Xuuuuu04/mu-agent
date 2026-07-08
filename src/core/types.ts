@@ -16,6 +16,12 @@ export interface MuConfig {
     night_min_wake_seconds: number
     night_start_hour: number
     night_end_hour: number
+    // A 股垂直化:调度按股市时段运作。enabled 缺省(undefined/false)= 完全不启用,clamp 行为与旧版一致。
+    a_stock?: {
+      enabled?: boolean
+      calendar_path?: string           // 交易日历 JSON,默认 data/memory/trade-calendar.json
+      market_min_wake_seconds?: number // 盘中(morning/afternoon 等)最短唤醒间隔,叠加成更紧的下限
+    }
   }
   agent: {
     max_turns_per_cycle: number
@@ -85,9 +91,14 @@ export interface MuConfig {
 
 export interface McpServerConfig {
   name: string
-  command: string
+  // stdio 传输:spawn 的命令。transport='http' 时可省略(改用 url)。
+  command?: string
   args?: string[]
   env?: Record<string, string>
+  // HTTP/streamable-HTTP 传输(如 iFind):transport='http' 时用 url+headers,忽略 command。
+  transport?: 'stdio' | 'http'
+  url?: string
+  headers?: Record<string, string>
 }
 
 export interface ProviderConfig {

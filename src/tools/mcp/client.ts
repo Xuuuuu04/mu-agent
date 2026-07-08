@@ -17,20 +17,31 @@ interface McpToolSpec {
   inputSchema?: { properties?: Record<string, unknown>; required?: string[] }
 }
 
-// 极简 MCP stdio 客户端。JSON-RPC over 换行分隔的 JSON,不引 SDK。
+// 极简 MCP 客户端,不引 SDK。两种传输:
+//  - stdio(默认):spawn 子进程,JSON-RPC over 换行分隔 JSON。带缓冲溢出自保(1b7d8cc)。
+//  - http(streamable-HTTP):POST JSON-RPC 到 url,响应是 JSON 或 SSE。给 iFind 这类远程 HTTP MCP 用。
 export class McpClient {
   private proc: ChildProcess | null = null
   private buffer = ''
   private nextId = 1
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
   private config: McpServerConfig
+  private transport: 'stdio' | 'http'
+  // 测试可注入假 fetch;默认用全局 fetch(Node 22+ 内置)。
+  private fetchImpl: typeof globalThis.fetch
 
-  constructor(config: McpServerConfig) {
+  constructor(config: McpServerConfig, fetchImpl?: typeof globalThis.fetch) {
     this.config = config
+    this.transport = config.transport === 'http' ? 'http' : 'stdio'
+    this.fetchImpl = fetchImpl ?? globalThis.fetch
   }
 
   async connect(): Promise<ToolDef[]> {
-    this.proc = spawn(this.config.command, this.config.args ?? [], {
+    return this.transport === 'http' ? this.connectHttp() : this.connectStdio()
+  }
+
+  private async connectStdio(): Promise<ToolDef[]> {
+    this.proc = spawn(this.config.command!, this.config.args ?? [], {
       env: { ...process.env, ...(this.config.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
@@ -51,6 +62,19 @@ export class McpClient {
     return (result.tools ?? []).map(t => this.toToolDef(t))
   }
 
+  // HTTP 传输:initialize(POST)→ notifications/initialized(POST,无 id)→ tools/list(POST)。
+  private async connectHttp(): Promise<ToolDef[]> {
+    if (!this.config.url) throw new Error(`mcp ${this.config.name}: transport=http 但缺 url`)
+    await this.httpRequest('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'mu', version: VERSION },
+    })
+    this.httpNotify('notifications/initialized', {})
+    const result = await this.httpRequest('tools/list', {}) as { tools?: McpToolSpec[] }
+    return (result.tools ?? []).map(t => this.toToolDef(t))
+  }
+
   private toToolDef(spec: McpToolSpec): ToolDef {
     const fullName = `${this.config.name}__${spec.name}`
     return {
@@ -60,10 +84,9 @@ export class McpClient {
       requiredKeys: spec.inputSchema?.required ?? [],
       execute: async (params): Promise<ToolResult> => {
         try {
-          const res = await this.request('tools/call', {
-            name: spec.name,
-            arguments: params,
-          }) as { content?: Array<{ type: string; text?: string }>; isError?: boolean }
+          const res = (this.transport === 'http'
+            ? await this.httpRequest('tools/call', { name: spec.name, arguments: params })
+            : await this.request('tools/call', { name: spec.name, arguments: params })) as { content?: Array<{ type: string; text?: string }>; isError?: boolean }
           const text = (res.content ?? [])
             .map(c => c.type === 'text' ? (c.text ?? '') : JSON.stringify(c))
             .join('\n')
@@ -72,6 +95,77 @@ export class McpClient {
           return { success: false, output: '', error: (err as Error).message }
         }
       },
+    }
+  }
+
+  // ── HTTP/streamable-HTTP 传输 ──
+  // 单响应体上限:防恶意/失控 server 回巨型包吃光内存(对标 stdio 的 MAX_BUFFER)。
+  private static readonly MAX_HTTP_RESPONSE = 32 * 1024 * 1024
+  private static readonly HTTP_TIMEOUT_MS = 30_000
+
+  private async httpRequest(method: string, params: unknown): Promise<unknown> {
+    const id = this.nextId++
+    const body = JSON.stringify({ jsonrpc: '2.0', id, method, params })
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), McpClient.HTTP_TIMEOUT_MS)
+    let res: Response
+    try {
+      res = await this.fetchImpl(this.config.url!, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          ...(this.config.headers ?? {}),
+        },
+        body,
+        signal: ac.signal,
+      })
+    } catch (e) {
+      clearTimeout(timer)
+      throw new Error(`mcp ${this.config.name} ${method} 网络错误: ${(e as Error).message}`)
+    }
+    clearTimeout(timer)
+    if (!res.ok) throw new Error(`mcp ${this.config.name} ${method} HTTP ${res.status}`)
+
+    const len = Number(res.headers.get('content-length') ?? 0)
+    if (len && len > McpClient.MAX_HTTP_RESPONSE) {
+      throw new Error(`mcp ${this.config.name} ${method} 响应体 ${len} 字节超上限`)
+    }
+    const ct = res.headers.get('content-type') ?? ''
+    const text = await res.text()
+    if (text.length > McpClient.MAX_HTTP_RESPONSE) {
+      throw new Error(`mcp ${this.config.name} ${method} 响应体超上限(${text.length} 字节)`)
+    }
+    let msg: JsonRpcResponse
+    try {
+      msg = ct.includes('text/event-stream') ? parseSseResult(text, id) : JSON.parse(text) as JsonRpcResponse
+    } catch {
+      throw new Error(`mcp ${this.config.name} ${method} 响应非合法 JSON`)
+    }
+    if (msg.error) throw new Error(msg.error.message)
+    return msg.result
+  }
+
+  // 通知(无 id,无结果):notifications/initialized 等。POST 后不解析 body。
+  private async httpNotify(method: string, params: unknown): Promise<void> {
+    const body = JSON.stringify({ jsonrpc: '2.0', method, params })
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), McpClient.HTTP_TIMEOUT_MS)
+    try {
+      await this.fetchImpl(this.config.url!, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          ...(this.config.headers ?? {}),
+        },
+        body,
+        signal: ac.signal,
+      })
+    } catch {
+      // 通知失败不致命(已 initialized 的 server 多半不需要它),吞掉。
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -154,4 +248,23 @@ export class McpClient {
     const t = setTimeout(() => { try { proc.kill('SIGKILL') } catch { /* 已退出 */ } }, 3000)
     proc.on('exit', () => clearTimeout(t))
   }
+}
+
+// 解析 streamable-HTTP 的 SSE 响应:每个 `data:` 行是一条 JSON-RPC 消息,挑出 id 匹配的那条
+// (一个事件可能跨多行 data:,按 SSE 规范用 \n 拼成一条载荷;这里以空行分隔事件块)。
+export function parseSseResult(text: string, id: number): JsonRpcResponse {
+  const events = text.split(/\n\s*\n/) // 事件之间用空行分隔
+  let last: JsonRpcResponse | null = null
+  for (const ev of events) {
+    const dataLines = ev.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).replace(/^ /, ''))
+    if (dataLines.length === 0) continue
+    const payload = dataLines.join('\n')
+    try {
+      const msg = JSON.parse(payload) as JsonRpcResponse
+      if (msg.id === id) return msg
+      last = msg
+    } catch { /* 非 JSON 的 data 块跳过 */ }
+  }
+  if (last) return last
+  throw new Error('mcp SSE 响应无可用 data 载荷')
 }

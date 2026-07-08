@@ -43,6 +43,13 @@ scheduler:
   night_min_wake_seconds: 3600   # 深夜最短 1 小时,省 token
   night_start_hour: 1
   night_end_hour: 7
+  # A 股垂直化(默认关)。开了之后交易日盘中(morning/afternoon,非 closed)会用更紧的下限更频繁醒来盯盘;
+  # 夜间/closed/未配置仍走旧规则。enabled 缺省 = 完全不启用,行为与不写这段一致。
+  # 模板见 config/trade-calendar.example.json,拷到 data/memory/trade-calendar.json 按年维护。
+  # a_stock:
+  #   enabled: true
+  #   calendar_path: ./data/memory/trade-calendar.json
+  #   market_min_wake_seconds: 120   # 盘中最短 2 分钟醒一次盯盘
 
 agent:
   max_turns_per_cycle: 20        # 单 cycle 最大工具轮数,防死循环

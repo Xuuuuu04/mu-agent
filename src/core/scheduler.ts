@@ -1,8 +1,9 @@
-import { readFileSync, existsSync, unlinkSync } from 'node:fs'
+import { readFileSync, existsSync, unlinkSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MuConfig, MoodState, WakeTrigger } from './types.js'
 import type { MemoryStore } from '../memory/store.js'
 import { atomicWriteJsonSync } from './atomic-file.js'
+import { beijingHour, getMarketPhase, loadTradeCalendarFile, type MarketPhase, type TradeCalendar } from './market-hours.js'
 
 export type WakeKind = 'reminder' | 'task' | 'rest'
 
@@ -31,6 +32,8 @@ export class Scheduler {
   private wakes: ScheduledWake[] = []
   private lastSuccessProbe: (() => Date | null) | null = null
   private readonly startedAt = Date.now()
+  // 交易日历 mtime 缓存:文件没动就不重读重解析。键 = path + mtimeMs。
+  private calendarCache: { path: string; mtimeMs: number; cal: TradeCalendar | null } | null = null
 
   constructor(config: MuConfig, store: MemoryStore) {
     this.config = config
@@ -254,15 +257,45 @@ export class Scheduler {
 
   private clamp(seconds: number): number {
     const s = this.config.scheduler
+    // beijingHour 修复(R1 抓的时区撕裂):marketPhase 按北京时间算,night 也必须按北京时间算,
+    // 否则非 CST 部署盘中 morning 会被系统 getHours 判成 night,市场下限静默失效。
+    const a = s.a_stock
+    const marketPhase = a?.enabled && a.calendar_path ? this.currentMarketPhase() : null
     return clampWake(seconds, {
-      hour: new Date().getHours(),
+      hour: beijingHour(new Date()),
       nightStart: s.night_start_hour,
       nightEnd: s.night_end_hour,
       min: s.min_wake_seconds,
       maxSleep: s.max_sleep_seconds,
       nightMin: s.night_min_wake_seconds,
       moodSleepy: this.loadMood()?.current === 'sleepy',
+      marketPhase,
+      marketMinWake: a?.market_min_wake_seconds,
     })
+  }
+
+  // 当前 A 股时段。a_stock 未启用 / 无日历 → null(等同于不叠加市场下限)。
+  private currentMarketPhase(): MarketPhase | null {
+    const cal = this.loadCalendarCached()
+    if (!cal) return null
+    return getMarketPhase(new Date(), cal)
+  }
+
+  // 读日历并 mtime 缓存。文件缺失/坏/过期全返 null,绝不抛 —— 日历问题降级成“仅周末推理”,不拖垮调度。
+  private loadCalendarCached(): TradeCalendar | null {
+    const path = this.config.scheduler.a_stock?.calendar_path
+    if (!path) return null
+    try {
+      const st = statSync(path) // 文件不存在抛 → catch → null
+      if (this.calendarCache && this.calendarCache.path === path && this.calendarCache.mtimeMs === st.mtimeMs) {
+        return this.calendarCache.cal
+      }
+      const cal = loadTradeCalendarFile(path) // 内部再校验 schema + stale,任一不过返 null
+      this.calendarCache = { path, mtimeMs: st.mtimeMs, cal }
+      return cal
+    } catch {
+      return null
+    }
   }
 
   private loadMood(): MoodState | null {
@@ -302,6 +335,9 @@ export interface ClampWakeConfig {
   maxSleep: number
   nightMin: number
   moodSleepy: boolean
+  // A 股盘中叠加更紧的下限(更频繁盯盘)。marketPhase 为 null/undefined/closed,或夜间,或缺 marketMinWake → 不叠加=旧行为。
+  marketPhase?: MarketPhase | null
+  marketMinWake?: number
 }
 
 export function clampWake(seconds: number, c: ClampWakeConfig): number {
@@ -310,5 +346,9 @@ export function clampWake(seconds: number, c: ClampWakeConfig): number {
     : (c.hour >= c.nightStart || c.hour < c.nightEnd)
   let min = isNight ? c.nightMin : c.min
   if (c.moodSleepy) min = Math.max(min, 1800)
+  // 市场下限叠加:盘中(morning/afternoon 等,非 closed)且非夜间 → 取更紧的下限(只降不升,更频繁盯盘)。
+  if (c.marketPhase && c.marketPhase !== 'closed' && c.marketMinWake != null && !isNight) {
+    min = Math.min(min, c.marketMinWake)
+  }
   return Math.max(min, Math.min(c.maxSleep, seconds))
 }

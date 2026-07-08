@@ -43,6 +43,46 @@ test('过夜睡眠:WAKE 53460(~14h)被 maxSleep 夹到 28800(8h),不再夹到 1h
   assert.equal(clampWake(53460, cfg({ hour: 16 })), 28800)
 })
 
+// ── A 股市场下限叠加(marketPhase / marketMinWake)──
+test('盘中 market 叠加:morning + marketMinWake=60 → 下限收到 60(更频繁盯盘)', () => {
+  // 无叠加时 30s 会被抬到 min=120;叠加后只抬到 60
+  assert.equal(clampWake(30, cfg({ hour: 10, marketPhase: 'morning', marketMinWake: 60 })), 60)
+  assert.equal(clampWake(600, cfg({ hour: 10, marketPhase: 'morning', marketMinWake: 60 })), 600)
+})
+
+test('盘中 market 叠加:afternoon 同样叠加', () => {
+  assert.equal(clampWake(30, cfg({ hour: 14, marketPhase: 'afternoon', marketMinWake: 60 })), 60)
+})
+
+test('市场下限只降不升:marketMinWake 大于常规 min 时不抬升', () => {
+  // 常规 min=120,marketMinWake=300 → 叠加取 min(120,300)=120,不抬到 300
+  assert.equal(clampWake(30, cfg({ hour: 10, marketPhase: 'morning', marketMinWake: 300 })), 120)
+})
+
+test('夜间即使 marketPhase=morning 也不叠加(时区撕裂防线)', () => {
+  // hour=23 夜间,marketPhase=morning 是矛盾的(真实不会发生),锁住 !isNight 守卫
+  assert.equal(clampWake(300, cfg({ hour: 23, marketPhase: 'morning', marketMinWake: 60 })), 1800)
+})
+
+test('closed 时段不叠加 → 走常规下限', () => {
+  assert.equal(clampWake(300, cfg({ hour: 12, marketPhase: 'closed', marketMinWake: 60 })), 300)
+})
+
+test('回归:marketPhase 缺省(undefined)= 完全旧行为', () => {
+  // 不传任何 market 字段,与改造前 clampWake 逐值一致
+  assert.equal(clampWake(600, cfg({ hour: 12 })), 600)
+  assert.equal(clampWake(30, cfg({ hour: 12 })), 120)
+  assert.equal(clampWake(300, cfg({ hour: 3 })), 1800) // 夜间
+})
+
+test('回归:marketMinWake 缺省时不叠加(有 marketPhase 也不生效)', () => {
+  assert.equal(clampWake(30, cfg({ hour: 12, marketPhase: 'morning' })), 120)
+})
+
+test('市场下限仍受 maxSleep 封顶', () => {
+  assert.equal(clampWake(99999, cfg({ hour: 10, marketPhase: 'morning', marketMinWake: 60 })), 28800)
+})
+
 function schedulerFixture() {
   const dataDir = mkdtempSync(join(tmpdir(), 'shion-scheduler-'))
   mkdirSync(join(dataDir, 'memory'), { recursive: true })

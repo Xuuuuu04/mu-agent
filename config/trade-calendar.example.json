@@ -1,0 +1,17 @@
+{
+  "_doc": "A 股交易日历模板。拷到 data/memory/trade-calendar.json 按年维护。valid_through 过期 → 视为 stale,调度降级成仅按周末推理(不抛)。holidays=法定休市日(不含周末);half_days=半日市(仅上午交易,午后 closed);extra_trade_days 预留(A 股不跟调休补班,当前不消费)。",
+  "version": 3,
+  "updated": "REPLACE-ME",
+  "valid_through": "REPLACE-ME",
+  "half_days": ["2026-09-30"],
+  "holidays": [
+    "2026-01-01",
+    "2026-02-16", "2026-02-17", "2026-02-18",
+    "2026-04-06",
+    "2026-05-01",
+    "2026-06-19",
+    "2026-09-25",
+    "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08"
+  ],
+  "extra_trade_days": []
+}
