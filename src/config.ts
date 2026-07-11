@@ -72,6 +72,26 @@ function validate(config: MuConfig): void {
   if (s.max_sleep_seconds < s.max_wake_seconds) {
     throw new Error('config: scheduler.max_sleep_seconds 不能小于 max_wake_seconds')
   }
+  if (s.cron_fallback_seconds > s.max_wake_seconds) {
+    throw new Error('config: scheduler.cron_fallback_seconds 不能大于 max_wake_seconds')
+  }
+  const wd = s.a_stock?.watchdog
+  if (wd) {
+    const cadence = [
+      ['interval_seconds', wd.interval_seconds ?? 180, 30, 1800],
+      ['auction_interval_seconds', wd.auction_interval_seconds ?? 60, 15, 300],
+      ['close_auction_interval_seconds', wd.close_auction_interval_seconds ?? 30, 10, 120],
+    ] as const
+    for (const [name, value, min, max] of cadence) {
+      if (!Number.isFinite(value) || value < min || value > max) {
+        throw new Error(`config: a_stock.watchdog.${name} 必须在 ${min}-${max} 秒之间`)
+      }
+    }
+    const near = wd.near_pct ?? 0.01
+    if (!Number.isFinite(near) || near <= 0 || near > 0.2) {
+      throw new Error('config: a_stock.watchdog.near_pct 必须在 (0, 0.2] 之间')
+    }
+  }
   if (config.agent.max_turns_per_cycle < 1) {
     throw new Error('config: agent.max_turns_per_cycle 必须 ≥1')
   }

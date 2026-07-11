@@ -20,11 +20,13 @@ export interface MuConfig {
     a_stock?: {
       enabled?: boolean
       calendar_path?: string           // 交易日历 JSON,默认 data/memory/trade-calendar.json
-      market_min_wake_seconds?: number // 盘中(morning/afternoon 等)最短唤醒间隔,叠加成更紧的下限
+      market_min_wake_seconds?: number // 已弃用:市场盯盘不再通过 LLM 唤醒实现
       // 自主盯盘 watchdog:盘中定时查持仓现价,触止损/止盈主动告警(确定性,不烧 LLM)。
       watchdog?: {
         enabled?: boolean
-        interval_seconds?: number      // tick 间隔,默认 300(非交易时段 tick 自动跳过)
+        interval_seconds?: number      // 连续竞价 tick 间隔,默认 180
+        auction_interval_seconds?: number // 开盘集合竞价,默认 60
+        close_auction_interval_seconds?: number // 收盘集合竞价,默认 30
         near_pct?: number              // 接近缓冲,默认 0.01(距线 ≤1% 预警)
       }
     }

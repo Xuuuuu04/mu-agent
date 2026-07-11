@@ -9,7 +9,8 @@ import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Position } from './types.js'
 import { atomicWriteJsonSync } from './atomic-file.js'
-import { getMarketPhase, isTradingDay, loadTradeCalendarFile } from './market-hours.js'
+import { beijingDateStr, beijingMinutes, nextMarketMonitoringAt, type MarketPhase } from './market-hours.js'
+import { MarketClock } from './market-clock.js'
 
 // 只在这些时段查价(价格在动的真实交易窗口)。
 const ACTIVE_PHASES = new Set(['call_auction', 'morning', 'afternoon', 'call_close'])
@@ -27,13 +28,19 @@ export interface WatchdogDeps {
   fetchPrices: PriceFetcher
   deliverToUser: Deliver
   calendarPath?: string
-  intervalSec?: number      // 默认 300
+  intervalSec?: number      // 默认 180
+  auctionIntervalSec?: number // 集合竞价默认 60
+  closeAuctionIntervalSec?: number // 收盘集合竞价默认 30
   nearPct?: number          // 默认 0.01
   now?: () => Date          // 测试注入
+  marketClock?: MarketClock // 生产由 scheduler/watchdog 共享
+  enabled?: boolean         // 生产显式传配置开关;测试默认 true
 }
 
 export interface WatchdogHealthSnapshot {
-  status: 'idle' | 'healthy' | 'degraded'
+  status: 'disabled' | 'idle' | 'healthy' | 'degraded'
+  enabled: boolean
+  running: boolean
   last_tick_at: string | null
   last_success_at: string | null
   active_position_count: number
@@ -44,6 +51,12 @@ export interface WatchdogHealthSnapshot {
   last_error: string | null
   last_error_at: string | null
   skipped_reason: 'outside_market' | 'no_active_positions' | null
+  phase: MarketPhase | null
+  in_flight: boolean
+  next_tick_at: string | null
+  cadence_reason: string | null
+  effective_interval_seconds: number | null
+  overlap_suppressed: number
 }
 
 interface WatchdogState {
@@ -54,30 +67,52 @@ interface WatchdogState {
 export class WatchdogManager {
   private deps: WatchdogDeps
   private intervalSec: number
+  private auctionIntervalSec: number
+  private closeAuctionIntervalSec: number
   private nearPct: number
-  private timer: ReturnType<typeof setInterval> | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private running = false
+  private generation = 0
+  private enabled: boolean
+  private inFlight = false
   private health: WatchdogHealthSnapshot
+  private marketClock: MarketClock
 
   constructor(deps: WatchdogDeps) {
     this.deps = deps
-    this.intervalSec = deps.intervalSec ?? 300
+    this.intervalSec = deps.intervalSec ?? 180
+    this.auctionIntervalSec = deps.auctionIntervalSec ?? 60
+    this.closeAuctionIntervalSec = deps.closeAuctionIntervalSec ?? 30
     this.nearPct = deps.nearPct ?? 0.01
+    this.enabled = deps.enabled ?? true
+    this.marketClock = deps.marketClock ?? new MarketClock(this.calendarPath())
     this.health = this.loadHealth()
+    this.health = {
+      ...this.health,
+      status: this.enabled ? (this.health.status === 'disabled' ? 'idle' : this.health.status) : 'disabled',
+      enabled: this.enabled,
+      running: false,
+      in_flight: false,
+      next_tick_at: null,
+      cadence_reason: null,
+      effective_interval_seconds: null,
+    }
   }
 
   start(): void {
-    if (this.timer) return
-    const runTick = () => {
-      this.tick().catch(err => console.error(`[watchdog] tick 失败: ${(err as Error).message}`))
-    }
-    runTick()
-    this.timer = setInterval(runTick, this.intervalSec * 1000)
-    this.timer.unref?.()  // 不阻止进程退出
-    console.log(`[watchdog] 启动,每 ${this.intervalSec}s tick 一次(非交易时段自动跳过)`)
+    if (!this.enabled || this.running) return
+    this.running = true
+    const generation = ++this.generation
+    this.updateHealth({ running: true })
+    void this.runAndSchedule(generation)
+    console.log(`[watchdog] 启动,按交易阶段自适应调度(连续竞价 ${this.intervalSec}s)`)
   }
 
   stop(): void {
-    if (this.timer) { clearInterval(this.timer); this.timer = null }
+    this.running = false
+    this.generation++
+    if (this.timer) { clearTimeout(this.timer); this.timer = null }
+    this.updateHealth({ running: false, next_tick_at: null, cadence_reason: null, effective_interval_seconds: null })
   }
 
   getHealthSnapshot(): WatchdogHealthSnapshot {
@@ -86,46 +121,83 @@ export class WatchdogManager {
 
   // 一次检查。导出便于活测/测试直接调。
   async tick(): Promise<void> {
+    if (this.inFlight) {
+      this.updateHealth({ overlap_suppressed: this.health.overlap_suppressed + 1 })
+      return
+    }
+    this.inFlight = true
+    this.updateHealth({ in_flight: true })
+    try {
+      await this.performTick()
+    } finally {
+      this.inFlight = false
+      this.updateHealth({ in_flight: false })
+    }
+  }
+
+  private async runAndSchedule(generation: number): Promise<void> {
+    if (!this.running || generation !== this.generation) return
+    try { await this.tick() } catch (err) {
+      console.error(`[watchdog] tick 失败: ${(err as Error).message}`)
+    }
+    if (!this.running || generation !== this.generation) return
+    const now = this.deps.now ? this.deps.now() : new Date()
+    const context = this.marketClock.context(now)
+    const cal = context.calendar
+    const next = nextMarketMonitoringAt(
+      now, cal, this.intervalSec, this.auctionIntervalSec, this.closeAuctionIntervalSec,
+    )
+    const phase = context.phase
+    const delay = Math.max(1_000, next.getTime() - now.getTime())
+    this.updateHealth({
+      phase,
+      next_tick_at: next.toISOString(),
+      cadence_reason: cadenceReason(phase),
+      effective_interval_seconds: Math.round(delay / 1000),
+    })
+    this.timer = setTimeout(() => {
+      this.timer = null
+      void this.runAndSchedule(generation)
+    }, delay)
+    this.timer.unref?.()
+  }
+
+  private calendarPath(): string {
+    return this.deps.calendarPath ?? join(this.deps.dataDir, 'memory', 'trade-calendar.json')
+  }
+
+  private async performTick(): Promise<void> {
     const now = this.deps.now ? this.deps.now() : new Date()
     const nowIso = now.toISOString()
-    const calendarPath = this.deps.calendarPath
-      ?? join(this.deps.dataDir, 'memory', 'trade-calendar.json')
-    const cal = loadTradeCalendarFile(calendarPath)
-    const calendarError = !cal
+    const calendarPath = this.calendarPath()
+    const context = this.marketClock.context(now)
+    const calendarError = context.health.status === 'degraded'
       ? `calendar unavailable, invalid, or stale: ${calendarPath}`
       : null
     if (calendarError) console.error(`[watchdog] ${calendarError};降级为工作日规则`)
-    // 只在真实交易时段(集合竞价/上午/下午/收盘集合)查价 ——
-    // pre_market(含凌晨)/lunch/post_market/closed/非交易日都跳过:价格没在动,不浪费调用、不在半夜用昨收告警。
-    const phase = getMarketPhase(now, cal)
-    if (!isTradingDay(now, cal) || !ACTIVE_PHASES.has(phase)) {
-      this.updateHealth({
-        status: calendarError ? 'degraded' : 'idle',
-        last_tick_at: nowIso,
-        last_error: calendarError ?? this.health.last_error,
-        last_error_at: calendarError ? nowIso : this.health.last_error_at,
-        skipped_reason: 'outside_market',
-      })
-      return
-    }
-
     let positions: Position[]
     try {
       positions = loadActivePositions(this.deps.dataDir)
     } catch (err) {
       const message = `portfolio load failed: ${(err as Error).message}`
       console.error(`[watchdog] ${message}`)
+      this.updateHealth({ status: 'degraded', last_tick_at: nowIso, active_position_count: 0,
+        quote_count: 0, prices: {}, as_of: null, missing_codes: [], last_error: message,
+        last_error_at: nowIso, skipped_reason: null })
+      return
+    }
+    // 只在真实交易时段(集合竞价/上午/下午/收盘集合)查价 ——
+    // pre_market(含凌晨)/lunch/post_market/closed/非交易日都跳过:价格没在动,不浪费调用、不在半夜用昨收告警。
+    const phase = context.phase
+    if (!ACTIVE_PHASES.has(phase)) {
       this.updateHealth({
-        status: 'degraded',
+        status: calendarError ? 'degraded' : 'idle',
         last_tick_at: nowIso,
-        active_position_count: 0,
-        quote_count: 0,
-        prices: {},
-        as_of: null,
-        missing_codes: [],
-        last_error: message,
-        last_error_at: nowIso,
-        skipped_reason: null,
+        active_position_count: positions.length,
+        phase,
+        last_error: calendarError,
+        last_error_at: calendarError ? nowIso : null,
+        skipped_reason: 'outside_market',
       })
       return
     }
@@ -138,8 +210,9 @@ export class WatchdogManager {
         prices: {},
         as_of: null,
         missing_codes: [],
-        last_error: calendarError ?? this.health.last_error,
-        last_error_at: calendarError ? nowIso : this.health.last_error_at,
+        phase,
+        last_error: calendarError,
+        last_error_at: calendarError ? nowIso : null,
         skipped_reason: 'no_active_positions',
       })
       return
@@ -177,6 +250,7 @@ export class WatchdogManager {
     const currentError = quoteError ?? calendarError
     this.updateHealth({
       status: currentError ? 'degraded' : 'healthy',
+      phase,
       last_tick_at: nowIso,
       last_success_at: missingCodes.length === 0 ? nowIso : this.health.last_success_at,
       active_position_count: positions.length,
@@ -184,8 +258,8 @@ export class WatchdogManager {
       prices: quoteCount > 0 ? currentPrices : this.health.prices,
       as_of: quoteCount > 0 ? nowIso : this.health.as_of,
       missing_codes: missingCodes,
-      last_error: currentError ?? this.health.last_error,
-      last_error_at: currentError ? nowIso : this.health.last_error_at,
+      last_error: currentError,
+      last_error_at: currentError ? nowIso : null,
       skipped_reason: null,
     })
     if (quoteError) console.error(`[watchdog] ${quoteError}`)
@@ -341,6 +415,8 @@ function loadActivePositions(dataDir: string): Position[] {
 function emptyHealth(): WatchdogHealthSnapshot {
   return {
     status: 'idle',
+    enabled: true,
+    running: false,
     last_tick_at: null,
     last_success_at: null,
     active_position_count: 0,
@@ -351,18 +427,24 @@ function emptyHealth(): WatchdogHealthSnapshot {
     last_error: null,
     last_error_at: null,
     skipped_reason: null,
+    phase: null,
+    in_flight: false,
+    next_tick_at: null,
+    cadence_reason: null,
+    effective_interval_seconds: null,
+    overlap_suppressed: 0,
   }
+}
+
+function cadenceReason(phase: MarketPhase): string {
+  if (phase === 'call_auction') return 'opening_auction_cadence'
+  if (phase === 'morning' || phase === 'afternoon') return 'continuous_trading_cadence'
+  if (phase === 'call_close') return 'closing_auction_cadence'
+  if (phase === 'pre_market') return 'await_opening_auction'
+  if (phase === 'lunch') return 'await_afternoon_session'
+  return 'await_next_trading_day'
 }
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort()
-}
-
-function beijingMinutes(date: Date): number {
-  const d = new Date(date.getTime() + 8 * 3600 * 1000)
-  return d.getUTCHours() * 60 + d.getUTCMinutes()
-}
-function beijingDateStr(date: Date): string {
-  const d = new Date(date.getTime() + 8 * 3600 * 1000)
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
 }

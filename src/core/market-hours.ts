@@ -98,6 +98,44 @@ export function nextTradeSessionOpen(date: Date = new Date(), cal: TradeCalendar
   return beijingMorningOpen(new Date(startMs + 20 * 86400 * 1000))
 }
 
+// watchdog 的下一次确定性检查时刻。盘中按阶段频率前进,但绝不跨过阶段边界；
+// 盘前/午休/盘后/非交易日直接睡到下一个有价格变化的边界,避免全天固定轮询空转。
+export function nextMarketMonitoringAt(
+  date: Date = new Date(),
+  cal: TradeCalendar | null = null,
+  continuousSec = 180,
+  auctionSec = 60,
+  closeAuctionSec = 30,
+): Date {
+  const phase = getMarketPhase(date, cal)
+  if (phase === 'pre_market') return beijingAt(date, 9 * 60 + 15)
+  if (phase === 'lunch') return beijingAt(date, 13 * 60)
+  if (phase === 'call_auction') return beforeBoundary(date, auctionSec, beijingAt(date, 9 * 60 + 30))
+  if (phase === 'morning') return beforeBoundary(date, continuousSec, beijingAt(date, 11 * 60 + 30))
+  if (phase === 'afternoon') return beforeBoundary(date, continuousSec, beijingAt(date, 14 * 60 + 57))
+  if (phase === 'call_close') return beforeBoundary(date, closeAuctionSec, beijingAt(date, 15 * 60))
+
+  const startMs = date.getTime()
+  for (let i = phase === 'post_market' || isTradingDay(date, cal) ? 1 : 0; i <= 20; i++) {
+    const candidate = new Date(startMs + i * 86400 * 1000)
+    if (isTradingDay(candidate, cal)) return beijingAt(candidate, 9 * 60 + 15)
+  }
+  return beijingAt(new Date(startMs + 20 * 86400 * 1000), 9 * 60 + 15)
+}
+
+function beforeBoundary(date: Date, seconds: number, boundary: Date): Date {
+  return new Date(Math.min(date.getTime() + Math.max(1, seconds) * 1000, boundary.getTime()))
+}
+
+// 给定 date 所在北京自然日的某分钟。minutes=9*60+15 即北京 09:15。
+function beijingAt(date: Date, minutes: number): Date {
+  const d = new Date(date.getTime() + BEIJING_OFFSET_MS)
+  return new Date(Date.UTC(
+    d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
+    Math.floor(minutes / 60) - 8, minutes % 60, 0, 0,
+  ))
+}
+
 // 某天的北京 09:30(= UTC 01:30)。以给定 date 所在的北京日期为准。
 function beijingMorningOpen(date: Date): Date {
   const d = new Date(date.getTime() + BEIJING_OFFSET_MS)
@@ -120,7 +158,7 @@ function isValidCalendar(raw: unknown): raw is TradeCalendar {
 
 // 读日历文件并校验。任何问题(缺失/JSON 坏/schema 坏/过期 stale)都返 null,绝不抛 ——
 // 上层据此降级成“仅按周末推理”,不让日历问题拖垮调度。
-export function loadTradeCalendarFile(path: string): TradeCalendar | null {
+export function loadTradeCalendarFile(path: string, referenceDate: Date = new Date()): TradeCalendar | null {
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(path, 'utf-8'))
@@ -129,7 +167,7 @@ export function loadTradeCalendarFile(path: string): TradeCalendar | null {
   }
   if (!isValidCalendar(raw)) return null
   // stale:valid_through 已过 → 日历不再可信,降级
-  const today = beijingDateStr()
+  const today = beijingDateStr(referenceDate)
   if (raw.valid_through < today) return null
   return raw
 }

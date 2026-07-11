@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   beijingMinutes, beijingHour, beijingDateStr, beijingWeekday,
-  isTradingDay, getMarketPhase, nextTradeSessionOpen, loadTradeCalendarFile,
+  isTradingDay, getMarketPhase, nextMarketMonitoringAt, nextTradeSessionOpen, loadTradeCalendarFile,
   type TradeCalendar,
 } from './market-hours.js'
 
@@ -91,6 +91,19 @@ test('getMarketPhase: 08:00 → pre_market', () => {
   assert.equal(getMarketPhase(at('2026-01-05T00:00:00.000Z'), CAL), 'pre_market') // 北京 08:00
 })
 
+test('getMarketPhase: 所有闭开边界精确归属', () => {
+  const cases = [
+    ['2026-01-05T01:14:59.000Z', 'pre_market'],
+    ['2026-01-05T01:15:00.000Z', 'call_auction'],
+    ['2026-01-05T01:30:00.000Z', 'morning'],
+    ['2026-01-05T03:30:00.000Z', 'lunch'],
+    ['2026-01-05T05:00:00.000Z', 'afternoon'],
+    ['2026-01-05T06:57:00.000Z', 'call_close'],
+    ['2026-01-05T07:00:00.000Z', 'post_market'],
+  ] as const
+  for (const [iso, phase] of cases) assert.equal(getMarketPhase(at(iso), CAL), phase, iso)
+})
+
 test('getMarketPhase: 周六全天 → closed', () => {
   assert.equal(getMarketPhase(at('2026-01-10T04:00:00.000Z'), CAL), 'closed') // 周六 12:00
 })
@@ -125,6 +138,33 @@ test('nextTradeSessionOpen: 节前半日市盘后 → 跨国庆长假到 10-09(2
   // 2026-09-30 周三 北京 16:00(UTC 08:00)→ 国庆周全休 → 2026-10-09 周五 09:30
   const open = nextTradeSessionOpen(at('2026-09-30T08:00:00.000Z'), CAL)
   assert.equal(open.toISOString(), '2026-10-09T01:30:00.000Z')
+})
+
+test('nextMarketMonitoringAt: 盘前精确对齐 09:15 集合竞价', () => {
+  const now = at('2026-01-05T01:14:50.000Z') // 北京 09:14:50
+  assert.equal(nextMarketMonitoringAt(now, CAL, 180, 60, 30).toISOString(), '2026-01-05T01:15:00.000Z')
+})
+
+test('nextMarketMonitoringAt: 午休不空转,精确对齐 13:00', () => {
+  const now = at('2026-01-05T04:00:00.000Z') // 北京 12:00
+  assert.equal(nextMarketMonitoringAt(now, CAL, 180, 60, 30).toISOString(), '2026-01-05T05:00:00.000Z')
+})
+
+test('nextMarketMonitoringAt: 盘中 cadence 不越过下一阶段边界', () => {
+  const morningEnd = at('2026-01-05T03:29:50.000Z') // 北京 11:29:50
+  const closeAuction = at('2026-01-05T06:57:40.000Z') // 北京 14:57:40
+  assert.equal(nextMarketMonitoringAt(morningEnd, CAL, 180, 60, 30).toISOString(), '2026-01-05T03:30:00.000Z')
+  assert.equal(nextMarketMonitoringAt(closeAuction, CAL, 180, 60, 30).toISOString(), '2026-01-05T06:58:10.000Z')
+})
+
+test('nextMarketMonitoringAt: 盘后/周末跳到下个交易日 09:15', () => {
+  const fridayAfter = at('2026-01-09T07:01:00.000Z') // 周五北京 15:01
+  assert.equal(nextMarketMonitoringAt(fridayAfter, CAL, 180, 60, 30).toISOString(), '2026-01-12T01:15:00.000Z')
+})
+
+test('nextMarketMonitoringAt: 半日市 11:30 后跳过午后并跨长假到下个交易日', () => {
+  const halfDayEnd = at('2026-09-30T03:30:00.000Z')
+  assert.equal(nextMarketMonitoringAt(halfDayEnd, CAL, 180, 60, 30).toISOString(), '2026-10-09T01:15:00.000Z')
 })
 
 // ── loadTradeCalendarFile:降级四路(缺失/JSON 坏/schema 坏/stale),绝不抛 ──

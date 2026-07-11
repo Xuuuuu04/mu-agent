@@ -183,6 +183,23 @@ agent:
   })
 })
 
+test('loadConfig: watchdog cadence 与 near_pct 越界时 fail-fast', () => {
+  for (const [field, value, pattern] of [
+    ['interval_seconds', 0, /interval_seconds 必须在/],
+    ['auction_interval_seconds', 5, /auction_interval_seconds 必须在/],
+    ['close_auction_interval_seconds', 500, /close_auction_interval_seconds 必须在/],
+    ['near_pct', 0, /near_pct 必须在/],
+  ] as const) {
+    const yaml = minimalYaml + `
+scheduler:
+  a_stock:
+    watchdog:
+      ${field}: ${value}
+`
+    withConfig(yaml, root => assert.throws(() => loadConfig(root), pattern))
+  }
+})
+
 test('loadConfig: config.yaml 缺失则从 example 拷贝后再读', () => {
   const root = mkdtempSync(join(tmpdir(), 'mu-cfg-'))
   try {

@@ -5,12 +5,14 @@ import { loadConfig } from './config.js'
 import { AgentLoop } from './core/agent-loop.js'
 import { ContextAssembler } from './core/context-assembler.js'
 import { Scheduler } from './core/scheduler.js'
+import { MarketClock } from './core/market-clock.js'
 import { ModelRouter } from './providers/router.js'
 import { ProactiveManager } from './core/proactive.js'
 import { WatchdogManager, parseIfindPrices } from './core/watchdog.js'
 import { log } from './core/logger.js'
 import { ToolRegistry } from './tools/registry.js'
 import { MemoryStore } from './memory/store.js'
+import { loadTasks, pickNextWakeFromTasks } from './memory/active-tasks.js'
 import { MemoryConsolidation } from './memory/consolidation.js'
 import { EmbeddingService } from './memory/embedding.js'
 import { loadMood } from './memory/layers/mood.js'
@@ -101,7 +103,11 @@ async function main() {
   const assembler = new ContextAssembler(config, store, embedding)
   assembler.registerTools(tools.toAnthropicTools())
 
-  const scheduler = new Scheduler(config, store)
+  const calendarPath = config.scheduler.a_stock?.calendar_path
+    ? resolve(PROJECT_ROOT, config.scheduler.a_stock.calendar_path)
+    : resolve(config.paths.data, 'memory', 'trade-calendar.json')
+  const marketClock = new MarketClock(calendarPath, !!config.scheduler.a_stock?.enabled)
+  const scheduler = new Scheduler(config, store, marketClock)
   // 整合可用便宜模型,没配就用主模型
   const consolidationRouter = config.model.auxiliary?.consolidation
     ? ModelRouter.forProvider(config.model.auxiliary.consolidation)
@@ -111,6 +117,9 @@ async function main() {
   const loop = new AgentLoop({ config, assembler, router, tools, store, scheduler, consolidation, embedding })
   // cron 兜底据此判断唤醒链断裂(太久没有成功 cycle 就强制唤醒,无条件,不依赖有没有待办)
   scheduler.setLastSuccessProbe(() => loop.health.lastSuccessAt)
+  scheduler.setRecoveryNeededProbe(() =>
+    pickNextWakeFromTasks(loadTasks(config.paths.data).tasks, Date.now()) !== null,
+  )
 
   const proactive = new ProactiveManager(config, config.paths.data)
 
@@ -131,6 +140,7 @@ async function main() {
     return lines.join('\n')
   })
 
+  let watchdog: WatchdogManager | null = null
   const webDir = resolve(PROJECT_ROOT, 'web')
   const webhook = new WebhookGateway({
     port: config.webhook?.port ?? 3210,
@@ -149,6 +159,9 @@ async function main() {
         consecutive_failures: h.consecutiveFailures,
         router_health: router.getHealthSnapshot(),
         scheduler_calendar_health: scheduler.getCalendarHealthSnapshot(),
+        scheduler_queue: scheduler.getQueueSummary(),
+        market_phase: marketClock.context().phase,
+        watchdog: watchdog?.getHealthSnapshot() ?? null,
         next_wake_at: sched.sleeping && sched.nextWake ? sched.nextWake.toISOString() : null,
         next_wake_reason: sched.sleeping ? sched.reason : null,
       }
@@ -189,12 +202,16 @@ async function main() {
   // 取价走 iFind stock_highfreq_quotes(structured real_time);未接 iFind 则取不到价、静默跳过。
   const aStock = config.scheduler.a_stock
   const watchdogCfg = aStock?.watchdog
-  const watchdog = new WatchdogManager({
+  watchdog = new WatchdogManager({
+    enabled: !!watchdogCfg?.enabled,
     dataDir: config.paths.data,
     deliverToUser: delivery.deliverToUser,
-    calendarPath: aStock?.calendar_path,
+    calendarPath,
     intervalSec: watchdogCfg?.interval_seconds,
+    auctionIntervalSec: watchdogCfg?.auction_interval_seconds,
+    closeAuctionIntervalSec: watchdogCfg?.close_auction_interval_seconds,
     nearPct: watchdogCfg?.near_pct,
+    marketClock,
     fetchPrices: async (codes) => {
       const tool = tools.get('hexin-ifind-stock__stock_highfreq_quotes')
       if (!tool) return new Map()
@@ -257,6 +274,7 @@ async function main() {
     console.log('\n[shutdown] 正在关闭...')
     clearInterval(outboxDrainTimer)
     hotReloader.stop()
+    watchdog?.stop()
     scheduler.stop()
     proactive.stop()
     mcpManager.stopAll()

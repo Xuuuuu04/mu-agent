@@ -43,13 +43,23 @@ scheduler:
   night_min_wake_seconds: 3600   # 深夜最短 1 小时,省 token
   night_start_hour: 1
   night_end_hour: 7
-  # A 股垂直化(默认关)。开了之后交易日盘中(morning/afternoon,非 closed)会用更紧的下限更频繁醒来盯盘;
-  # 夜间/closed/未配置仍走旧规则。enabled 缺省 = 完全不启用,行为与不写这段一致。
+  # A 股垂直化(默认关)。市场 watchdog 是独立确定性时钟,不会为了盯盘唤醒 LLM。
+  # 盘前、午休、盘后和休市日会直接睡到下一交易边界；集合竞价频率更密,连续竞价较疏。
   # 模板见 config/trade-calendar.example.json,拷到 data/memory/trade-calendar.json 按年维护。
   # a_stock:
   #   enabled: true
   #   calendar_path: ./data/memory/trade-calendar.json
-  #   market_min_wake_seconds: 120   # 盘中最短 2 分钟醒一次盯盘
+  #   watchdog:
+  #     enabled: true
+  #     interval_seconds: 180               # 连续竞价每 3 分钟
+  #     auction_interval_seconds: 60        # 开盘集合竞价每 1 分钟
+  #     close_auction_interval_seconds: 30  # 收盘集合竞价每 30 秒
+  #     near_pct: 0.01                      # 距止损/止盈线 1% 预警
+  # 成本估算:按 180/60/30 秒配置,完整交易日约 100 次批量报价请求(全部持仓合并为一批),0 次 LLM 调用;
+  # 连续竞价用 300 秒时约 68 次。先看 /api/status 的 market_phase、watchdog.next_tick_at、
+  # watchdog.cadence_reason、scheduler_queue 和 scheduler_calendar_health 再调参,异常可将 watchdog.enabled=false 回滚。
+  # 日历 missing/corrupt/stale 时只按周一至周五降级推理,法定假日可能误判为交易日;此时 status 会标 degraded,
+  # 应修复/更新 trade-calendar.json,不要把 weekday fallback 当作完整交易所日历。
 
 agent:
   max_turns_per_cycle: 20        # 单 cycle 最大工具轮数,防死循环

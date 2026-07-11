@@ -284,6 +284,8 @@ test('tick: 完整报价 → 健康快照包含价格与成功时间', () => wit
   const health = wd.getHealthSnapshot()
   assert.deepEqual(health, {
     status: 'healthy',
+    enabled: true,
+    running: false,
     last_tick_at: MON_10_UTC.toISOString(),
     last_success_at: MON_10_UTC.toISOString(),
     active_position_count: 1,
@@ -294,8 +296,100 @@ test('tick: 完整报价 → 健康快照包含价格与成功时间', () => wit
     last_error: null,
     last_error_at: null,
     skipped_reason: null,
+    phase: 'morning',
+    in_flight: false,
+    next_tick_at: null,
+    cadence_reason: null,
+    effective_interval_seconds: null,
+    overlap_suppressed: 0,
   })
   assert.doesNotThrow(() => JSON.stringify(health))
+}))
+
+test('lifecycle: 慢 tick 中 stop→start 不会遗留旧代 timer', () => withDir([pos({})], async (dir) => {
+  let releaseFirst!: () => void
+  let fetchCount = 0
+  const wd = new WatchdogManager({
+    dataDir: dir,
+    intervalSec: 1,
+    fetchPrices: async () => {
+      fetchCount++
+      if (fetchCount === 1) await new Promise<void>(resolve => { releaseFirst = resolve })
+      return new Map([['003816', 3.90]])
+    },
+    deliverToUser: async () => {},
+    now: () => MON_10_UTC,
+  })
+  wd.start()
+  await new Promise(resolve => setImmediate(resolve))
+  wd.stop()
+  wd.start()
+  releaseFirst()
+  await new Promise(resolve => setTimeout(resolve, 1100))
+  wd.stop()
+  assert.equal(fetchCount, 2, '重启后只能有一条新代调度链')
+}))
+
+test('disabled: 不回放落盘的旧 healthy/in_flight/next_tick 运行态', () => withDir([pos({})], async (dir) => {
+  writeFileSync(join(dir, 'memory', 'watchdog-health.json'), JSON.stringify({
+    status: 'healthy', enabled: true, running: true, in_flight: true,
+    next_tick_at: '2099-01-01T00:00:00.000Z', cadence_reason: 'stale',
+  }))
+  const wd = new WatchdogManager({
+    dataDir: dir,
+    enabled: false,
+    fetchPrices: async () => new Map(),
+    deliverToUser: async () => {},
+  })
+  wd.start()
+  const health = wd.getHealthSnapshot()
+  assert.equal(health.status, 'disabled')
+  assert.equal(health.enabled, false)
+  assert.equal(health.running, false)
+  assert.equal(health.in_flight, false)
+  assert.equal(health.next_tick_at, null)
+  assert.equal(health.cadence_reason, null)
+}))
+
+test('start: 09:14:50 精确挂到 09:15,而非沿进程启动时刻固定漂移', () => withDir([pos({})], async (dir) => {
+  const now = new Date('2026-01-05T01:14:50.000Z')
+  const wd = new WatchdogManager({
+    dataDir: dir,
+    fetchPrices: async () => new Map(),
+    deliverToUser: async () => {},
+    now: () => now,
+  })
+  wd.start()
+  await new Promise(resolve => setImmediate(resolve))
+  const health = wd.getHealthSnapshot()
+  wd.stop()
+  assert.equal(health.phase, 'pre_market')
+  assert.equal(health.next_tick_at, '2026-01-05T01:15:00.000Z')
+  assert.equal(health.effective_interval_seconds, 10)
+  assert.equal(health.cadence_reason, 'await_opening_auction')
+  assert.equal(health.active_position_count, 1)
+}))
+
+test('tick: 慢报价未完成时拒绝重入,不会并发重复取价', () => withDir([pos({})], async (dir) => {
+  let resolveFetch!: (value: Map<string, number>) => void
+  let fetchCount = 0
+  const wd = new WatchdogManager({
+    dataDir: dir,
+    fetchPrices: async () => {
+      fetchCount++
+      return await new Promise<Map<string, number>>(resolve => { resolveFetch = resolve })
+    },
+    deliverToUser: async () => {},
+    now: () => MON_10_UTC,
+  })
+  const first = wd.tick()
+  await new Promise(resolve => setImmediate(resolve))
+  await wd.tick()
+  assert.equal(fetchCount, 1)
+  assert.equal(wd.getHealthSnapshot().overlap_suppressed, 1)
+  resolveFetch(new Map([['003816', 3.90]]))
+  await first
+  assert.equal(wd.getHealthSnapshot().in_flight, false)
 }))
 
 test('tick: 配置的交易日历不可用 → 周末规则继续工作但健康状态降级', () => withDir([pos({})], async (dir) => {

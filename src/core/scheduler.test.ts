@@ -126,14 +126,14 @@ function calendarHealth(scheduler: Scheduler): CalendarHealth | undefined {
     .getCalendarHealthSnapshot?.()
 }
 
-test('Scheduler: a_stock enabled 无显式路径时使用默认日历;missing 仍按 weekday phase 调度并暴露 degraded', (t) => {
+test('Scheduler: 市场盯盘与 LLM 唤醒解耦;日历 missing 仍暴露 degraded', (t) => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
   t.mock.timers.setTime(MONDAY_MORNING)
   const s = schedulerFixture({ enabled: true, market_min_wake_seconds: 60 })
   try {
     s.scheduler.scheduleNext({ seconds: 30, reason: '盘中复盘', activity_type: 'rest' })
     const delay = Date.parse(s.scheduler.getScheduledWakes()[0]!.at) - Date.now()
-    assert.equal(delay, 60_000, '缺日历也应按周一 morning fallback 应用 market cadence')
+    assert.equal(delay, 120_000, '盘中不能为了盯盘而高频唤醒 LLM')
     assert.deepEqual(calendarHealth(s.scheduler), {
       enabled: true,
       status: 'degraded',
@@ -156,7 +156,7 @@ test('Scheduler: 默认日历 corrupt/stale 时保持 weekday cadence 且 health
       writeFileSync(join(s.dataDir, 'memory', 'trade-calendar.json'), calendar)
       s.scheduler.scheduleNext({ seconds: 30, reason: '盘中复盘', activity_type: 'rest' })
       const delay = Date.parse(s.scheduler.getScheduledWakes()[0]!.at) - Date.now()
-      assert.equal(delay, 60_000, label)
+      assert.equal(delay, 120_000, label)
       assert.equal(calendarHealth(s.scheduler)?.status, 'degraded', label)
     } finally { s.cleanup() }
   }
@@ -323,10 +323,39 @@ test('cron 兜底 情况2 负例:有 pending wake 且未逾期 → 不产生多�
   const s = cronFixture()
   try {
     s.scheduler.setLastSuccessProbe(() => new Date(-10_000_000)) // idle 很大,但队列非空应短路
+    s.scheduler.setRecoveryNeededProbe(() => false)
     s.scheduler.scheduleNext({ seconds: 7200, reason: '提醒', activity_type: 'reminder' }) // 2h 后,tick 内不逾期
     s.scheduler.startCronFallback()
     t.mock.timers.tick(900 * 1000)
     assert.equal(s.fired.length, 0)
+  } finally { s.cleanup() }
+})
+
+test('cron 兜底:远期 reminder 不掩盖活跃任务的断链恢复', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'] })
+  const s = cronFixture()
+  try {
+    s.scheduler.setLastSuccessProbe(() => new Date(-10_000_000))
+    s.scheduler.setRecoveryNeededProbe(() => true)
+    s.scheduler.scheduleNext({ seconds: 7200, reason: '两小时后的用户提醒', activity_type: 'reminder' })
+    s.scheduler.startCronFallback()
+    t.mock.timers.tick(900 * 1000)
+    assert.equal(s.fired.length, 1)
+    assert.equal(s.fired[0]!.type, 'cron_fallback')
+    assert.equal(s.scheduler.getQueueSummary().reminder, 1, '恢复不能吞掉用户提醒')
+  } finally { s.cleanup() }
+})
+
+test('cron 兜底:没有可恢复工作时保持确定性 idle,不浪费 LLM', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'] })
+  const s = cronFixture()
+  try {
+    s.scheduler.setLastSuccessProbe(() => new Date(-10_000_000))
+    s.scheduler.setRecoveryNeededProbe(() => false)
+    s.scheduler.startCronFallback()
+    t.mock.timers.tick(900 * 1000)
+    assert.equal(s.fired.length, 0)
+    assert.equal(s.scheduler.getQueueSummary().last_recovery_reason, 'idle_no_recoverable_work')
   } finally { s.cleanup() }
 })
 
