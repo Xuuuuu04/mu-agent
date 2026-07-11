@@ -1,0 +1,9 @@
+{
+  "name": "mx_xuangu",
+  "description": "东方财富智能选股:用自然语言描述条件选 A股/港股/美股/板块/基金/ETF。例:市盈率低于20且ROE大于15的白酒股、近一周涨幅前10的半导体股",
+  "parameters": {
+    "query": { "type": "string", "description": "选股条件(自然语言),如:市盈率<20且ROE>15的消费股" }
+  },
+  "command": "./scripts/run-mx.sh xuangu \"{{query}}\"",
+  "max_output": 18000
+}

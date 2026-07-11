@@ -32,6 +32,20 @@ export interface WatchdogDeps {
   now?: () => Date          // 测试注入
 }
 
+export interface WatchdogHealthSnapshot {
+  status: 'idle' | 'healthy' | 'degraded'
+  last_tick_at: string | null
+  last_success_at: string | null
+  active_position_count: number
+  quote_count: number
+  prices: Record<string, number>
+  as_of: string | null
+  missing_codes: string[]
+  last_error: string | null
+  last_error_at: string | null
+  skipped_reason: 'outside_market' | 'no_active_positions' | null
+}
+
 interface WatchdogState {
   date: string              // YYYY-MM-DD(北京),跨天清 fired
   fired: string[]           // `${code}:${type}` 已告警
@@ -42,18 +56,22 @@ export class WatchdogManager {
   private intervalSec: number
   private nearPct: number
   private timer: ReturnType<typeof setInterval> | null = null
+  private health: WatchdogHealthSnapshot
 
   constructor(deps: WatchdogDeps) {
     this.deps = deps
     this.intervalSec = deps.intervalSec ?? 300
     this.nearPct = deps.nearPct ?? 0.01
+    this.health = this.loadHealth()
   }
 
   start(): void {
     if (this.timer) return
-    this.timer = setInterval(() => {
+    const runTick = () => {
       this.tick().catch(err => console.error(`[watchdog] tick 失败: ${(err as Error).message}`))
-    }, this.intervalSec * 1000)
+    }
+    runTick()
+    this.timer = setInterval(runTick, this.intervalSec * 1000)
     this.timer.unref?.()  // 不阻止进程退出
     console.log(`[watchdog] 启动,每 ${this.intervalSec}s tick 一次(非交易时段自动跳过)`)
   }
@@ -62,31 +80,121 @@ export class WatchdogManager {
     if (this.timer) { clearInterval(this.timer); this.timer = null }
   }
 
+  getHealthSnapshot(): WatchdogHealthSnapshot {
+    return { ...this.health, prices: { ...this.health.prices }, missing_codes: [...this.health.missing_codes] }
+  }
+
   // 一次检查。导出便于活测/测试直接调。
   async tick(): Promise<void> {
     const now = this.deps.now ? this.deps.now() : new Date()
-    const cal = this.deps.calendarPath ? loadTradeCalendarFile(this.deps.calendarPath) : null
+    const nowIso = now.toISOString()
+    const calendarPath = this.deps.calendarPath
+      ?? join(this.deps.dataDir, 'memory', 'trade-calendar.json')
+    const cal = loadTradeCalendarFile(calendarPath)
+    const calendarError = !cal
+      ? `calendar unavailable, invalid, or stale: ${calendarPath}`
+      : null
+    if (calendarError) console.error(`[watchdog] ${calendarError};降级为工作日规则`)
     // 只在真实交易时段(集合竞价/上午/下午/收盘集合)查价 ——
     // pre_market(含凌晨)/lunch/post_market/closed/非交易日都跳过:价格没在动,不浪费调用、不在半夜用昨收告警。
     const phase = getMarketPhase(now, cal)
-    if (!isTradingDay(now, cal) || !ACTIVE_PHASES.has(phase)) return
+    if (!isTradingDay(now, cal) || !ACTIVE_PHASES.has(phase)) {
+      this.updateHealth({
+        status: calendarError ? 'degraded' : 'idle',
+        last_tick_at: nowIso,
+        last_error: calendarError ?? this.health.last_error,
+        last_error_at: calendarError ? nowIso : this.health.last_error_at,
+        skipped_reason: 'outside_market',
+      })
+      return
+    }
 
-    const positions = loadActivePositions(this.deps.dataDir)
-    if (positions.length === 0) return
+    let positions: Position[]
+    try {
+      positions = loadActivePositions(this.deps.dataDir)
+    } catch (err) {
+      const message = `portfolio load failed: ${(err as Error).message}`
+      console.error(`[watchdog] ${message}`)
+      this.updateHealth({
+        status: 'degraded',
+        last_tick_at: nowIso,
+        active_position_count: 0,
+        quote_count: 0,
+        prices: {},
+        as_of: null,
+        missing_codes: [],
+        last_error: message,
+        last_error_at: nowIso,
+        skipped_reason: null,
+      })
+      return
+    }
+    if (positions.length === 0) {
+      this.updateHealth({
+        status: calendarError ? 'degraded' : 'idle',
+        last_tick_at: nowIso,
+        active_position_count: 0,
+        quote_count: 0,
+        prices: {},
+        as_of: null,
+        missing_codes: [],
+        last_error: calendarError ?? this.health.last_error,
+        last_error_at: calendarError ? nowIso : this.health.last_error_at,
+        skipped_reason: 'no_active_positions',
+      })
+      return
+    }
 
     let prices: Map<string, number>
     try {
       prices = await this.deps.fetchPrices(positions.map(p => p.code))
     } catch (err) {
-      console.error(`[watchdog] 取价失败,本轮跳过: ${(err as Error).message}`)
+      const message = `quote fetch failed: ${(err as Error).message}`
+      console.error(`[watchdog] 取价失败,本轮降级: ${(err as Error).message}`)
+      this.updateHealth({
+        status: 'degraded',
+        last_tick_at: nowIso,
+        active_position_count: positions.length,
+        missing_codes: uniqueSorted(positions.map(p => p.code)),
+        last_error: message,
+        last_error_at: nowIso,
+        skipped_reason: null,
+      })
       return
     }
+
+    const currentPrices: Record<string, number> = {}
+    const missingCodes: string[] = []
+    for (const code of uniqueSorted(positions.map(p => p.code))) {
+      const price = prices.get(code)
+      if (price == null || !Number.isFinite(price) || price <= 0) missingCodes.push(code)
+      else currentPrices[code] = price
+    }
+    const quoteCount = Object.keys(currentPrices).length
+    const quoteError = missingCodes.length > 0
+      ? `missing quotes for active positions: ${missingCodes.join(', ')}`
+      : null
+    const currentError = quoteError ?? calendarError
+    this.updateHealth({
+      status: currentError ? 'degraded' : 'healthy',
+      last_tick_at: nowIso,
+      last_success_at: missingCodes.length === 0 ? nowIso : this.health.last_success_at,
+      active_position_count: positions.length,
+      quote_count: quoteCount,
+      prices: quoteCount > 0 ? currentPrices : this.health.prices,
+      as_of: quoteCount > 0 ? nowIso : this.health.as_of,
+      missing_codes: missingCodes,
+      last_error: currentError ?? this.health.last_error,
+      last_error_at: currentError ? nowIso : this.health.last_error_at,
+      skipped_reason: null,
+    })
+    if (quoteError) console.error(`[watchdog] ${quoteError}`)
 
     const state = this.loadState(now)
     let fired = false
     for (const p of positions) {
       const price = prices.get(p.code)
-      if (price == null || !Number.isFinite(price)) continue
+      if (price == null || !Number.isFinite(price) || price <= 0) continue
       for (const trig of checkTriggers(p, price, this.nearPct)) {
         const key = `${p.code}:${trig.type}`
         if (state.fired.includes(key)) continue
@@ -105,7 +213,41 @@ export class WatchdogManager {
 
   // ── 状态落盘(冷却)──
   private statePath(): string { return join(this.deps.dataDir, 'memory', 'watchdog-state.json') }
+  private healthPath(): string { return join(this.deps.dataDir, 'memory', 'watchdog-health.json') }
   private alertPath(): string { return join(this.deps.dataDir, 'memory', 'alerts.log') }
+
+  private loadHealth(): WatchdogHealthSnapshot {
+    const initial = emptyHealth()
+    if (!existsSync(this.healthPath())) return initial
+    try {
+      const raw = JSON.parse(readFileSync(this.healthPath(), 'utf-8')) as Partial<WatchdogHealthSnapshot>
+      return {
+        ...initial,
+        ...raw,
+        prices: raw.prices && typeof raw.prices === 'object' ? raw.prices : {},
+        missing_codes: Array.isArray(raw.missing_codes) ? raw.missing_codes : [],
+      }
+    } catch (err) {
+      console.error(`[watchdog] 健康快照读取失败,从空状态恢复: ${(err as Error).message}`)
+      return initial
+    }
+  }
+
+  private updateHealth(patch: Partial<WatchdogHealthSnapshot>): void {
+    this.health = {
+      ...this.health,
+      ...patch,
+      prices: patch.prices ? { ...patch.prices } : { ...this.health.prices },
+      missing_codes: patch.missing_codes ? [...patch.missing_codes] : [...this.health.missing_codes],
+    }
+    try {
+      atomicWriteJsonSync(this.healthPath(), this.health, 2)
+    } catch (err) {
+      const message = `health snapshot write failed: ${(err as Error).message}`
+      this.health = { ...this.health, status: 'degraded', last_error: message, last_error_at: this.health.last_tick_at }
+      console.error(`[watchdog] ${message}`)
+    }
+  }
 
   private loadState(now: Date): WatchdogState {
     const today = beijingDateStr(now)
@@ -113,17 +255,23 @@ export class WatchdogManager {
       try {
         const s = JSON.parse(readFileSync(this.statePath(), 'utf-8')) as WatchdogState
         if (s.date === today && Array.isArray(s.fired)) return s
-      } catch { /* 坏了重来 */ }
+      } catch (err) {
+        console.error(`[watchdog] 冷却状态读取失败,从当日空状态恢复: ${(err as Error).message}`)
+      }
     }
     return { date: today, fired: [] }
   }
 
   private saveState(state: WatchdogState): void {
-    try { atomicWriteJsonSync(this.statePath(), state, 2) } catch { /* 落盘失败不拖垮 tick */ }
+    try { atomicWriteJsonSync(this.statePath(), state, 2) } catch (err) {
+      console.error(`[watchdog] 冷却状态写入失败: ${(err as Error).message}`)
+    }
   }
 
   private appendAlert(text: string): void {
-    try { appendFileSync(this.alertPath(), text + '\n') } catch { /* 本地写失败尽力 */ }
+    try { appendFileSync(this.alertPath(), text + '\n') } catch (err) {
+      console.error(`[watchdog] alerts.log 写入失败: ${(err as Error).message}`)
+    }
   }
 }
 
@@ -171,7 +319,7 @@ export function parseIfindPrices(toolOutput: string): Map<string, number> {
       const fullCode = String(row[codeIdx])            // '003816.SZ'
       const code = fullCode.split('.')[0]              // '003816'
       const price = Number(row[priceIdx])
-      if (code && Number.isFinite(price)) map.set(code, price)
+      if (code && Number.isFinite(price) && price > 0) map.set(code, price)
     }
   } catch { /* 解析失败返空 map,watchdog 本轮跳过该票 */ }
   return map
@@ -183,8 +331,31 @@ function loadActivePositions(dataDir: string): Position[] {
   if (!existsSync(path)) return []
   try {
     const all = JSON.parse(readFileSync(path, 'utf-8')) as Position[]
+    if (!Array.isArray(all)) throw new Error('portfolio.json root must be an array')
     return all.filter(p => p.status === 'active')
-  } catch { return [] }
+  } catch (err) {
+    throw new Error(`${path}: ${(err as Error).message}`, { cause: err })
+  }
+}
+
+function emptyHealth(): WatchdogHealthSnapshot {
+  return {
+    status: 'idle',
+    last_tick_at: null,
+    last_success_at: null,
+    active_position_count: 0,
+    quote_count: 0,
+    prices: {},
+    as_of: null,
+    missing_codes: [],
+    last_error: null,
+    last_error_at: null,
+    skipped_reason: null,
+  }
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return [...new Set(values)].sort()
 }
 
 function beijingMinutes(date: Date): number {

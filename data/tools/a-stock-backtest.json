@@ -1,0 +1,29 @@
+{
+  "name": "a_stock_backtest",
+  "description": "A股历史策略回测（仅历史模拟）：运行 MA 交叉、布林带或 RSI 反转策略，模拟 T+1/整手/费用/滑点/涨跌停，写入稳定 JSON 报告。不连接券商、不下单、不保证收益。",
+  "parameters": {
+    "symbol": {
+      "type": "string",
+      "description": "6 位 A 股代码，例如 000001",
+      "pattern": "^[0-9]{6}$"
+    },
+    "start": {
+      "type": "string",
+      "description": "开始日期 YYYYMMDD",
+      "pattern": "^[0-9]{8}$"
+    },
+    "end": {
+      "type": "string",
+      "description": "结束日期 YYYYMMDD",
+      "pattern": "^[0-9]{8}$"
+    },
+    "strategy": {
+      "type": "string",
+      "description": "预置策略",
+      "enum": ["ma_cross", "bollinger", "rsi_reversal"]
+    }
+  },
+  "required": ["symbol", "start", "end", "strategy"],
+  "command": "./scripts/run-backtest.sh --symbol \"{{symbol}}\" --start \"{{start}}\" --end \"{{end}}\" --strategy \"{{strategy}}\"",
+  "max_output": 12000
+}

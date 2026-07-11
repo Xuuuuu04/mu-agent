@@ -1,0 +1,9 @@
+{
+  "name": "mx_moni",
+  "description": "东方财富妙想【模拟】组合管理:模拟买入/卖出/查持仓/调仓。自然语言下指令,返回结果文本。这是模拟盘(纸面交易),不涉及真实资金。例:买入100股贵州茅台 / 查看我的模拟持仓 / 卖出50股比亚迪",
+  "parameters": {
+    "query": { "type": "string", "description": "自然语言指令,如:买入100股贵州茅台 / 查看模拟持仓" }
+  },
+  "command": "./scripts/run-mx.sh moni \"{{query}}\"",
+  "max_output": 15000
+}

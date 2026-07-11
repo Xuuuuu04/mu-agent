@@ -11,6 +11,8 @@ export interface ChatParams {
   thinking?: 'disabled'
   // 调用方取消（子代理超时等），provider 必须尽快中止底层 HTTP。
   signal?: AbortSignal
+  // 默认 allow 以保持自愈；金融建议等高风险轮次可逐调用 deny,primary 失败即 fail closed。
+  fallbackPolicy?: 'allow' | 'deny'
 }
 
 export interface ChatResponse {
@@ -18,6 +20,8 @@ export interface ChatResponse {
   content: ContentBlock[]
   stop_reason: string | null
   usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number }
+  // 由 ModelRouter 注入；直接调用单个 provider 时可为空。
+  provider?: { name: string; role: 'primary' | 'fallback' }
 }
 
 export interface ModelProvider {

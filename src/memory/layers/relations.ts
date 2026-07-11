@@ -43,6 +43,17 @@ export class RelationsLayer {
       parts.push('(watchdog 盘中会按止损/止盈监控这些票;改仓位用 portfolio_* 工具)')
     }
 
+    const investmentCases = this.loadActiveInvestmentCases()
+    if (investmentCases.length > 0) {
+      parts.push('')
+      parts.push('--- 活跃投研假设(事实/推断仍要看 evidence 区分) ---')
+      for (const c of investmentCases.slice(0, 5)) {
+        const invalidation = c.invalidation.slice(0, 2).join(';') || '未设'
+        parts.push(`- [${c.id}] ${c.code} ${c.name} 置信${c.confidence}: ${c.thesis.slice(0, 180)} // 失效:${invalidation} // 复盘:${c.review_at}`)
+      }
+      parts.push('(新证据用 investment_evidence_append 追加;不要覆盖成无法审计的最新观点)')
+    }
+
     if (parts.length === 0) {
       return '(还没有记住关于用户的事实)'
     }
@@ -79,6 +90,36 @@ export class RelationsLayer {
     try {
       const all = JSON.parse(readFileSync(path, 'utf-8')) as Position[]
       return all.filter(p => p.status === 'active')
+    } catch {
+      return []
+    }
+  }
+
+  private loadActiveInvestmentCases(): Array<{
+    id: string
+    code: string
+    name: string
+    thesis: string
+    confidence: number
+    invalidation: string[]
+    review_at: string
+  }> {
+    const path = join(this.dataDir, 'memory', 'investment-cases.json')
+    if (!existsSync(path)) return []
+    try {
+      const state = JSON.parse(readFileSync(path, 'utf-8')) as { cases?: unknown[] }
+      if (!Array.isArray(state.cases)) return []
+      return state.cases.filter((value): value is {
+        id: string; code: string; name: string; thesis: string; confidence: number
+        invalidation: string[]; review_at: string; status: string
+      } => {
+        if (!value || typeof value !== 'object') return false
+        const c = value as Record<string, unknown>
+        return c.status === 'active'
+          && ['id', 'code', 'name', 'thesis', 'review_at'].every(k => typeof c[k] === 'string')
+          && typeof c.confidence === 'number' && Number.isFinite(c.confidence)
+          && Array.isArray(c.invalidation) && c.invalidation.every(x => typeof x === 'string')
+      })
     } catch {
       return []
     }

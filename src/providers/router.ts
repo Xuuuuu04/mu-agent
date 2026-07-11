@@ -10,11 +10,26 @@ export function createProvider(config: ProviderConfig): ModelProvider {
   throw new Error(`unsupported format: ${config.format}`)
 }
 
+export interface RouterHealthSnapshot {
+  last_selected_provider: string | null
+  last_selected_role: 'primary' | 'fallback' | null
+  primary_successes: number
+  fallback_successes: number
+  primary_failures: number
+  fallback_failures: number
+  total_failures: number
+  last_success_at: string | null
+  last_error: string | null
+  last_error_provider: string | null
+  last_error_at: string | null
+}
+
 export class ModelRouter {
   private primary: ModelProvider
   private fallbacks: ModelProvider[]
   // provider 级冷却:429/限流后跳过该 provider 直到冷却结束,防重试风暴
   private cooldowns = new Map<string, number>()
+  private healthState: RouterHealthSnapshot = emptyRouterHealth()
 
   constructor(config: MuConfig) {
     this.primary = createProvider(config.model.primary)
@@ -31,6 +46,10 @@ export class ModelRouter {
     return r
   }
 
+  getHealthSnapshot(): RouterHealthSnapshot {
+    return { ...this.ensureHealth() }
+  }
+
   async chat(params: ChatParams): Promise<ChatResponse> {
     const { messages, dropped } = sanitizeMessages(params.messages)
     if (dropped.length > 0) {
@@ -39,21 +58,34 @@ export class ModelRouter {
     }
 
     const all = [this.primary, ...this.fallbacks]
-    const providers = all.filter(p => this.isAvailable(p.name))
+    const fallbackAllowed = params.fallbackPolicy !== 'deny'
+    const candidates = fallbackAllowed ? all : [this.primary]
+    const providers = candidates.filter(p => this.isAvailable(p.name))
     if (providers.length === 0) {
+      if (!fallbackAllowed) {
+        const message = `primary provider ${this.primary.name} cooling down; fallback denied`
+        this.recordRouteError(message, this.primary.name)
+        throw new Error(message)
+      }
       // 全部冷却中。原来这里 clear() 后立刻重打 = 单 provider 拓扑下冷却形同虚设,反而叠加内层重试成风暴。
       // 改为退避:抛出带最早恢复时间的错误,让调用方(cycle)这次失败(有自愈),别继续轰限流的 provider。
       const soonest = Math.min(...all.map(p => this.cooldowns.get(p.name) ?? Date.now()))
       const waitS = Math.max(0, Math.ceil((soonest - Date.now()) / 1000))
-      throw new Error(`all providers cooling down, retry in ${waitS}s`)
+      const message = `all providers cooling down, retry in ${waitS}s`
+      this.recordRouteError(message, null)
+      throw new Error(message)
     }
 
     for (let i = 0; i < providers.length; i++) {
       const provider = providers[i]!
+      const role = provider === this.primary ? 'primary' : 'fallback'
       try {
-        return await provider.chat(params)
+        const response = await provider.chat(params)
+        this.recordSuccess(provider.name, role)
+        return { ...response, provider: { name: provider.name, role } }
       } catch (err) {
-        const msg = (err as Error).message
+        const msg = redactSecret((err as Error).message, provider.config.api_key)
+        this.recordFailure(provider.name, role, msg)
         const is429 = msg.includes('429') || msg.includes('1313')
         this.cooldowns.set(provider.name, Date.now() + (is429 ? 60_000 : 10_000))
         const isLast = i === providers.length - 1
@@ -72,7 +104,57 @@ export class ModelRouter {
     return false
   }
 
+  private ensureHealth(): RouterHealthSnapshot {
+    // Object.create(ModelRouter.prototype) 的测试/兼容构造不会跑字段初始化,这里防御性补齐。
+    if (!this.healthState) this.healthState = emptyRouterHealth()
+    return this.healthState
+  }
+
+  private recordSuccess(provider: string, role: 'primary' | 'fallback'): void {
+    const health = this.ensureHealth()
+    if (role === 'primary') health.primary_successes++
+    else health.fallback_successes++
+    health.last_selected_provider = provider
+    health.last_selected_role = role
+    health.last_success_at = new Date().toISOString()
+  }
+
+  private recordFailure(provider: string, role: 'primary' | 'fallback', message: string): void {
+    const health = this.ensureHealth()
+    if (role === 'primary') health.primary_failures++
+    else health.fallback_failures++
+    health.total_failures++
+    this.recordRouteError(message, provider)
+  }
+
+  private recordRouteError(message: string, provider: string | null): void {
+    const health = this.ensureHealth()
+    health.last_error = message
+    health.last_error_provider = provider
+    health.last_error_at = new Date().toISOString()
+  }
+
   get primaryName(): string {
     return this.primary.name
   }
+}
+
+function emptyRouterHealth(): RouterHealthSnapshot {
+  return {
+    last_selected_provider: null,
+    last_selected_role: null,
+    primary_successes: 0,
+    fallback_successes: 0,
+    primary_failures: 0,
+    fallback_failures: 0,
+    total_failures: 0,
+    last_success_at: null,
+    last_error: null,
+    last_error_provider: null,
+    last_error_at: null,
+  }
+}
+
+function redactSecret(message: string, secret: string): string {
+  return secret ? message.split(secret).join('[REDACTED]') : message
 }

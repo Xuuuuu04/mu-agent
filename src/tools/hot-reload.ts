@@ -92,6 +92,12 @@ export class HotReloader {
         command?: string
         url?: string
         method?: string
+        max_output?: number
+      }
+
+      if (this.registry.isReserved(def.name)) {
+        console.log(`[hot-reload] 跳过受保护的内置工具定义: ${def.name}`)
+        return
       }
 
       const tool = this.buildTool(def)
@@ -110,9 +116,10 @@ export class HotReloader {
     command?: string
     url?: string
     method?: string
+    max_output?: number
   }): ToolDef {
     if (def.command) {
-      return this.buildShellTool(def as typeof def & { command: string })
+      return this.buildShellTool(def as typeof def & { command: string; max_output?: number })
     }
     if (def.url) {
       return this.buildHttpTool(def as typeof def & { url: string })
@@ -120,7 +127,9 @@ export class HotReloader {
     throw new Error('工具定义需要 command 或 url 字段')
   }
 
-  private buildShellTool(def: { name: string; description: string; parameters: Record<string, unknown>; command: string }): ToolDef {
+  private buildShellTool(def: { name: string; description: string; parameters: Record<string, unknown>; command: string; max_output?: number }): ToolDef {
+    // 大输出工具(如美团酒旅)可在 JSON 声明 max_output 放宽截断;默认 10K,上限 100K(见 runShell)。
+    const maxOutput = typeof def.max_output === 'number' ? def.max_output : 10_000
     return {
       name: def.name,
       description: def.description,
@@ -129,7 +138,7 @@ export class HotReloader {
         // 参数值可能来自抓取的网页等不可信来源:含注入元字符直接拒绝,不让它变 shell 语法执行。
         const r = substituteParams(def.command, params)
         if ('error' in r) return { success: false, output: '', error: r.error }
-        return runPresetShell(r.cmd, 30_000)
+        return runPresetShell(r.cmd, 30_000, maxOutput)
       },
     }
   }

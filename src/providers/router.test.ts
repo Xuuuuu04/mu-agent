@@ -58,6 +58,7 @@ test('primary 成功 → 不走 fallback', async () => {
   const r = routerWith(okProvider('primary', calls), [okProvider('fb1', calls)])
   const res = await r.chat(baseParams)
   assert.equal(res.id, 'id-primary')
+  assert.deepEqual(res.provider, { name: 'primary', role: 'primary' })
   assert.deepEqual(calls, ['primary'])   // fallback 没被碰
 })
 
@@ -66,7 +67,77 @@ test('primary 抛错 → 落到第一个 fallback', async () => {
   const r = routerWith(failProvider('primary', calls), [okProvider('fb1', calls)])
   const res = await r.chat(baseParams)
   assert.equal(res.id, 'id-fb1')
+  assert.deepEqual(res.provider, { name: 'fb1', role: 'fallback' })
   assert.deepEqual(calls, ['primary', 'fb1'])
+})
+
+test('fallbackPolicy=deny: primary 失败后 fail closed,不调用 fallback', async () => {
+  const calls: string[] = []
+  const r = routerWith(failProvider('primary', calls, 'primary unavailable'), [okProvider('fb1', calls)])
+
+  await assert.rejects(r.chat({ ...baseParams, fallbackPolicy: 'deny' }), /primary unavailable/)
+  assert.deepEqual(calls, ['primary'])
+})
+
+test('fallbackPolicy=deny: primary 冷却中也不会绕到 fallback', async () => {
+  const calls: string[] = []
+  const r = routerWith(failProvider('primary', calls), [okProvider('fb1', calls)])
+  await r.chat(baseParams) // 默认 allow:primary 失败后 fallback 成功,并使 primary 进入冷却
+  calls.length = 0
+
+  await assert.rejects(
+    r.chat({ ...baseParams, fallbackPolicy: 'deny' }),
+    /primary provider.*cooling down/i,
+  )
+  assert.deepEqual(calls, [])
+})
+
+test('health: primary 失败但 fallback 成功仍保留失败与选择信息', async () => {
+  const calls: string[] = []
+  const r = routerWith(
+    failProvider('glm', calls, 'glm HTTP 400: code 1210'),
+    [okProvider('minimax', calls)],
+  )
+
+  await r.chat(baseParams)
+
+  const health = r.getHealthSnapshot()
+  assert.equal(health.last_selected_provider, 'minimax')
+  assert.equal(health.last_selected_role, 'fallback')
+  assert.equal(health.primary_successes, 0)
+  assert.equal(health.fallback_successes, 1)
+  assert.equal(health.primary_failures, 1)
+  assert.equal(health.fallback_failures, 0)
+  assert.equal(health.total_failures, 1)
+  assert.equal(health.last_error_provider, 'glm')
+  assert.match(health.last_error ?? '', /1210/)
+  assert.ok(health.last_error_at)
+  assert.ok(health.last_success_at)
+  const serialized = JSON.stringify(health)
+  assert.doesNotMatch(serialized, /api_key|sk-/)
+})
+
+test('health: primary 成功计数并暴露可序列化快照', async () => {
+  const calls: string[] = []
+  const r = routerWith(okProvider('glm', calls))
+
+  await r.chat(baseParams)
+
+  const health = r.getHealthSnapshot()
+  assert.deepEqual({ ...health, last_success_at: '<timestamp>' }, {
+    last_selected_provider: 'glm',
+    last_selected_role: 'primary',
+    primary_successes: 1,
+    fallback_successes: 0,
+    primary_failures: 0,
+    fallback_failures: 0,
+    total_failures: 0,
+    last_success_at: '<timestamp>',
+    last_error: null,
+    last_error_provider: null,
+    last_error_at: null,
+  })
+  assert.match(health.last_success_at ?? '', /T/)
 })
 
 test('primary + fb1 都挂 → 依次落到 fb2', async () => {

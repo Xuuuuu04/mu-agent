@@ -83,7 +83,7 @@ test('市场下限仍受 maxSleep 封顶', () => {
   assert.equal(clampWake(99999, cfg({ hour: 10, marketPhase: 'morning', marketMinWake: 60 })), 28800)
 })
 
-function schedulerFixture() {
+function schedulerFixture(aStock?: MuConfig['scheduler']['a_stock']) {
   const dataDir = mkdtempSync(join(tmpdir(), 'shion-scheduler-'))
   mkdirSync(join(dataDir, 'memory'), { recursive: true })
   const config = {
@@ -95,6 +95,7 @@ function schedulerFixture() {
       night_min_wake_seconds: 1800,
       night_start_hour: 23,
       night_end_hour: 7,
+      a_stock: aStock,
     },
     paths: { data: dataDir },
   } as MuConfig
@@ -109,6 +110,103 @@ function schedulerFixture() {
     },
   }
 }
+
+const MONDAY_MORNING = Date.parse('2026-01-05T02:00:00.000Z')
+
+type CalendarHealth = {
+  enabled: boolean
+  status: 'disabled' | 'healthy' | 'degraded'
+  path: string | null
+  last_checked_at: string | null
+  last_error: string | null
+}
+
+function calendarHealth(scheduler: Scheduler): CalendarHealth | undefined {
+  return (scheduler as unknown as { getCalendarHealthSnapshot?: () => CalendarHealth })
+    .getCalendarHealthSnapshot?.()
+}
+
+test('Scheduler: a_stock enabled 无显式路径时使用默认日历;missing 仍按 weekday phase 调度并暴露 degraded', (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+  t.mock.timers.setTime(MONDAY_MORNING)
+  const s = schedulerFixture({ enabled: true, market_min_wake_seconds: 60 })
+  try {
+    s.scheduler.scheduleNext({ seconds: 30, reason: '盘中复盘', activity_type: 'rest' })
+    const delay = Date.parse(s.scheduler.getScheduledWakes()[0]!.at) - Date.now()
+    assert.equal(delay, 60_000, '缺日历也应按周一 morning fallback 应用 market cadence')
+    assert.deepEqual(calendarHealth(s.scheduler), {
+      enabled: true,
+      status: 'degraded',
+      path: join(s.dataDir, 'memory', 'trade-calendar.json'),
+      last_checked_at: new Date().toISOString(),
+      last_error: 'calendar unavailable, invalid, or stale',
+    })
+  } finally { s.cleanup() }
+})
+
+test('Scheduler: 默认日历 corrupt/stale 时保持 weekday cadence 且 health degraded', (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+  t.mock.timers.setTime(MONDAY_MORNING)
+  for (const [label, calendar] of [
+    ['corrupt', '{broken'],
+    ['stale', JSON.stringify({ valid_through: '2000-01-01', holidays: [], half_days: [] })],
+  ] as const) {
+    const s = schedulerFixture({ enabled: true, market_min_wake_seconds: 60 })
+    try {
+      writeFileSync(join(s.dataDir, 'memory', 'trade-calendar.json'), calendar)
+      s.scheduler.scheduleNext({ seconds: 30, reason: '盘中复盘', activity_type: 'rest' })
+      const delay = Date.parse(s.scheduler.getScheduledWakes()[0]!.at) - Date.now()
+      assert.equal(delay, 60_000, label)
+      assert.equal(calendarHealth(s.scheduler)?.status, 'degraded', label)
+    } finally { s.cleanup() }
+  }
+})
+
+test('Scheduler: 默认日历有效时 health healthy', (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+  t.mock.timers.setTime(MONDAY_MORNING)
+  const s = schedulerFixture({ enabled: true, market_min_wake_seconds: 60 })
+  try {
+    writeFileSync(join(s.dataDir, 'memory', 'trade-calendar.json'), JSON.stringify({
+      valid_through: '2099-12-31', holidays: [], half_days: [],
+    }))
+    s.scheduler.scheduleNext({ seconds: 30, reason: '盘中复盘', activity_type: 'rest' })
+    assert.equal(calendarHealth(s.scheduler)?.status, 'healthy')
+  } finally { s.cleanup() }
+})
+
+test('Scheduler: mtime 未变但跨过 valid_through 后重新校验为 degraded', (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+  t.mock.timers.setTime(MONDAY_MORNING)
+  const s = schedulerFixture({ enabled: true, market_min_wake_seconds: 60 })
+  try {
+    writeFileSync(join(s.dataDir, 'memory', 'trade-calendar.json'), JSON.stringify({
+      valid_through: '2026-01-05', holidays: [], half_days: [],
+    }))
+    assert.equal(calendarHealth(s.scheduler)?.status, 'healthy')
+
+    t.mock.timers.setTime(Date.parse('2026-01-06T02:00:00.000Z'))
+    assert.equal(calendarHealth(s.scheduler)?.status, 'degraded')
+  } finally { s.cleanup() }
+})
+
+test('Scheduler: a_stock disabled 保持旧 clamp 且 calendar health disabled', (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+  t.mock.timers.setTime(MONDAY_MORNING)
+  const s = schedulerFixture({ enabled: false, market_min_wake_seconds: 60 })
+  try {
+    s.scheduler.scheduleNext({ seconds: 30, reason: '普通休息', activity_type: 'rest' })
+    const delay = Date.parse(s.scheduler.getScheduledWakes()[0]!.at) - Date.now()
+    assert.equal(delay, 120_000)
+    assert.deepEqual(calendarHealth(s.scheduler), {
+      enabled: false,
+      status: 'disabled',
+      path: null,
+      last_checked_at: null,
+      last_error: null,
+    })
+  } finally { s.cleanup() }
+})
 
 test('用户提醒不受 max_sleep clamp:24 小时后仍约 24 小时', () => {
   const s = schedulerFixture()

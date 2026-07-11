@@ -20,6 +20,7 @@ export interface ToolLoopParams {
   budgetMs: number
   maxTokens: number
   thinking?: 'disabled'
+  fallbackPolicy?: 'allow' | 'deny'
   abortSignal?: AbortSignal
   // 工具执行:内部已 try/catch,绝不抛(对标 ToolRegistry.execute)
   executeTool: (name: string, input: Record<string, unknown>) => Promise<ToolResult>
@@ -82,6 +83,7 @@ export async function runToolLoop(p: ToolLoopParams): Promise<ToolLoopResult> {
       tools: p.tools.length > 0 ? p.tools : undefined,
       max_tokens: p.maxTokens,
       thinking: p.thinking,
+      fallbackPolicy: p.fallbackPolicy,
       signal: p.abortSignal,
     })
 

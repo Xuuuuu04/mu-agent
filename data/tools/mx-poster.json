@@ -1,0 +1,10 @@
+{
+  "name": "mx_poster",
+  "description": "⚠️ 在东方财富妙想AI社区【公开发帖】,以主人的账号身份。慎用——这是公开行为,发出去别人能看到。仅当主人明确要求发帖时用。参数:title 标题、text 正文(支持 HTML)",
+  "parameters": {
+    "title": { "type": "string", "description": "帖子标题" },
+    "text": { "type": "string", "description": "帖子正文(支持 HTML)" }
+  },
+  "command": "./scripts/run-mx.sh poster --title \"{{title}}\" --text \"{{text}}\"",
+  "max_output": 8000
+}

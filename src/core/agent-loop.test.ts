@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { AgentLoop } from './agent-loop.js'
 import { ToolRegistry } from '../tools/registry.js'
 import type { MuConfig, WakeTrigger, ContentBlock, ToolDef, Task } from './types.js'
-import type { ChatResponse } from '../providers/base.js'
+import type { ChatParams, ChatResponse } from '../providers/base.js'
 
 // runCycle 集成测试:mock router/assembler,验证完整 cycle 流(含死亡螺旋相关的末轮回退)。
 // 专业助理被动响应:不自动安排唤醒,也不解析 [WAKE]/[MOOD] 指令。
@@ -29,10 +29,12 @@ const textRes = (t: string) => res([{ type: 'text', text: t }])
 function scriptedRouter(responses: ChatResponse[]) {
   let i = 0
   let calls = 0
+  const params: ChatParams[] = []
   return {
     primaryName: 'fake',
     get calls() { return calls },
-    chat: async () => { calls++; return responses[Math.min(i++, responses.length - 1)]! },
+    params,
+    chat: async (p: ChatParams) => { calls++; params.push(p); return responses[Math.min(i++, responses.length - 1)]! },
   }
 }
 
@@ -57,13 +59,14 @@ const fakeAssembler = () => ({
   streamLayer: { append() {} },
 })
 
-function setup(responses: ChatResponse[], opts: { tool?: ToolDef; withStore?: boolean } = {}) {
+function setup(responses: ChatResponse[], opts: { tool?: ToolDef; tools?: ToolDef[]; withStore?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'mu-al-'))
   mkdirSync(join(dir, 'memory'), { recursive: true })
   const router = scriptedRouter(responses)
   const scheduler = fakeScheduler()
   const tools = new ToolRegistry()
   if (opts.tool) tools.register(opts.tool, { reserved: true })
+  for (const tool of opts.tools ?? []) tools.register(tool, { reserved: true })
   const loop = new AgentLoop({
     config: minimalConfig(dir),
     assembler: fakeAssembler() as never,
@@ -87,6 +90,101 @@ test('简单文本 cycle:无工具,回复=模型文本', async () => {
     const r = await s.loop.runCycle(userMsg('在吗'))
     assert.equal(r.response, '在的呀')
     assert.equal(r.tool_calls_made, 0)
+  } finally { s.cleanup() }
+})
+
+test('金融建议轮次禁止 fallback,普通生活对话保留默认路由', async () => {
+  const finance = setup([textRes('已按主模型分析')])
+  const general = setup([textRes('可以')])
+  try {
+    await finance.loop.runCycle(userMsg('分析贵州茅台的估值和仓位风险'))
+    await general.loop.runCycle(userMsg('晚饭吃什么'))
+    assert.equal(finance.router.params[0]?.fallbackPolicy, 'deny')
+    assert.equal(general.router.params[0]?.fallbackPolicy, undefined)
+  } finally {
+    finance.cleanup()
+    general.cleanup()
+  }
+})
+
+test('金融分类器:识别代码、公司名决策问句和明确金融语义', async () => {
+  const positives = [
+    '贵州茅台现在能买吗？',
+    '600519怎么看？',
+    '平安银行要不要继续拿着？',
+    '中微公司要不要继续拿着？',
+    '分析 A 股持仓风险',
+    '这只 ETF 的估值怎么样',
+  ]
+  for (const text of positives) {
+    const s = setup([textRes('ok')])
+    try {
+      await s.loop.runCycle(userMsg(text))
+      assert.equal(s.router.params[0]?.fallbackPolicy, 'deny', `应识别金融意图: ${text}`)
+    } finally { s.cleanup() }
+  }
+})
+
+test('金融分类器:不使用裸投资、基金、卖出造成生活语义误报', async () => {
+  const negatives = [
+    '把旧电脑卖出去',
+    '这台电脑能买吗？', '这本书能买吗？', '这个课程能买吗？', '这只猫能买吗？',
+    '这套房子能买吗？', '这个家电能买吗？',
+    '我在基金会做志愿者',
+    '投资时间学 Rust',
+    '晚饭吃什么',
+  ]
+  for (const text of negatives) {
+    const s = setup([textRes('ok')])
+    try {
+      await s.loop.runCycle(userMsg(text))
+      assert.equal(s.router.params[0]?.fallbackPolicy, undefined, `不应识别金融意图: ${text}`)
+    } finally { s.cleanup() }
+  }
+})
+
+test('金融分类器:从 active 持仓和研究案例安全加载已知实体', async () => {
+  const portfolio = setup([textRes('ok')])
+  const versionedCase = setup([textRes('ok')])
+  const broken = setup([textRes('ok')])
+  try {
+    writeFileSync(join(portfolio.dir, 'memory', 'portfolio.json'), JSON.stringify([
+      { code: '003816', name: '中国广核', status: 'active' },
+    ]))
+    writeFileSync(join(versionedCase.dir, 'memory', 'investment-cases.json'), JSON.stringify({
+      version: 1, cases: [{ code: '688012', name: '中微公司', status: 'active' }],
+    }))
+    writeFileSync(join(broken.dir, 'memory', 'portfolio.json'), '{broken')
+    await portfolio.loop.runCycle(userMsg('中国广核现在能买吗？'))
+    await versionedCase.loop.runCycle(userMsg('中微公司现在能买吗？'))
+    await broken.loop.runCycle(userMsg('这本书能买吗？'))
+    assert.equal(portfolio.router.params[0]?.fallbackPolicy, 'deny')
+    assert.equal(versionedCase.router.params[0]?.fallbackPolicy, 'deny')
+    assert.equal(broken.router.params[0]?.fallbackPolicy, undefined)
+  } finally {
+    portfolio.cleanup(); versionedCase.cleanup(); broken.cleanup()
+  }
+})
+
+test('金融轮次只发送金融+核心工具 schema,不携带地图等无关 MCP', async () => {
+  const tool = (name: string): ToolDef => ({
+    name, description: name, parameters: {}, execute: async () => ({ success: true, output: '' }),
+  })
+  const s = setup([textRes('完成')], { tools: [
+    tool('ifind-stock__stock_highfreq_quotes'), tool('mx_data'), tool('portfolio_risk_analyze'),
+    tool('memory_search'), tool('schedule_wake'), tool('amap__maps_direction_driving'),
+    tool('train12306__get-tickets'),
+  ] })
+  try {
+    await s.loop.runCycle(userMsg('分析 A 股持仓风险'))
+    const names = (s.router.params[0]?.tools ?? []).map(t => t.name)
+    assert.ok(names.includes('ifind-stock__stock_highfreq_quotes'))
+    assert.ok(names.includes('mx_data'))
+    assert.ok(names.includes('portfolio_risk_analyze'))
+    assert.ok(names.includes('memory_search'))
+    assert.ok(names.includes('schedule_wake'))
+    assert.ok(!names.includes('amap__maps_direction_driving'))
+    assert.ok(!names.includes('train12306__get-tickets'))
   } finally { s.cleanup() }
 })
 

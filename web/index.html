@@ -3,279 +3,261 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Shion 工作台</title>
+<title>Shion · A 股投研台</title>
 <style>
 :root {
-  --bg: #faf6ef;          /* 暖白,像灯下的纸 */
-  --card: #f4ecdf;        /* 奶茶 */
-  --card-deep: #ecdfca;
-  --ink: #5b4636;         /* 深棕的字 */
-  --ink-soft: #a08b78;
-  --pink: #d9a7a0;        /* 淡粉点缀 */
-  --warm: #e9b96e;        /* 醒着的灯 */
-  --night: #9aa3b5;       /* 睡着的月色 */
+  --bg: #08100e;
+  --panel: #101a17;
+  --panel-2: #15221e;
+  --line: #253630;
+  --text: #e7efe9;
+  --muted: #8fa39a;
+  --mint: #63d4a5;
+  --amber: #e7b85d;
+  --red: #ec766f;
+  --blue: #78a9e6;
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* { box-sizing: border-box; }
 body {
-  font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  background: var(--bg);
-  color: var(--ink);
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 8% -8%, rgba(99,212,165,.12), transparent 34%),
+    radial-gradient(circle at 94% 4%, rgba(120,169,230,.08), transparent 28%),
+    var(--bg);
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
   min-height: 100vh;
-  display: flex;
-  justify-content: center;
-  line-height: 1.9;
 }
-.room {
-  width: 100%;
-  max-width: 580px;
-  padding: 9vh 28px 64px;
+.shell { width: min(1380px, 100%); margin: 0 auto; padding: 28px 30px 64px; }
+header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 30px; }
+.brand { display: flex; align-items: center; gap: 14px; }
+.mark {
+  width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center;
+  color: #07100d; font-weight: 800; background: linear-gradient(145deg, #8be4be, #48b889);
+  box-shadow: 0 10px 30px rgba(83,203,155,.2);
 }
-/* 名字与灯 */
-.door { text-align: center; margin-bottom: 8px; }
-.lamp {
-  display: inline-block;
-  width: 11px; height: 11px;
-  border-radius: 50%;
-  background: var(--warm);
-  box-shadow: 0 0 18px 4px rgba(233,185,110,.45);
-  animation: breathe 3.4s ease-in-out infinite;
-  vertical-align: 6px;
-  margin-right: 14px;
+h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: .04em; }
+.subtitle { color: var(--muted); font-size: 13px; }
+.status-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.pill { border: 1px solid var(--line); background: rgba(16,26,23,.72); color: var(--muted); padding: 7px 10px; border-radius: 999px; font-size: 12px; }
+.pill.ok { color: var(--mint); border-color: rgba(99,212,165,.35); }
+.pill.warn { color: var(--amber); border-color: rgba(231,184,93,.38); }
+.pill.bad { color: var(--red); border-color: rgba(236,118,111,.4); }
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 13px; margin-bottom: 18px; }
+.metric, .card { background: linear-gradient(160deg, rgba(21,34,30,.96), rgba(13,23,20,.96)); border: 1px solid var(--line); border-radius: 17px; }
+.metric { padding: 17px 18px 15px; min-height: 106px; }
+.metric .label { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+.metric .value { font-size: 27px; font-weight: 650; letter-spacing: -.02em; }
+.metric .hint { color: var(--muted); font-size: 11px; margin-top: 7px; }
+.positive { color: var(--red); }
+.negative { color: var(--mint); }
+.layout { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(310px, .72fr); gap: 18px; }
+.stack { display: grid; gap: 18px; align-content: start; }
+.card { padding: 19px; overflow: hidden; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.card-title { font-size: 14px; font-weight: 650; letter-spacing: .04em; }
+.card-meta { color: var(--muted); font-size: 11px; }
+.health-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.health-item { background: rgba(7,14,12,.45); border: 1px solid rgba(37,54,48,.78); padding: 12px; border-radius: 12px; }
+.health-item span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+.health-item strong { font-size: 13px; font-weight: 600; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 710px; }
+th { color: var(--muted); font-size: 11px; font-weight: 500; text-align: right; border-bottom: 1px solid var(--line); padding: 0 9px 11px; }
+th:first-child, td:first-child { text-align: left; }
+td { font-size: 12px; text-align: right; padding: 13px 9px; border-bottom: 1px solid rgba(37,54,48,.55); white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+.stock-name { font-weight: 600; }
+.stock-code { color: var(--muted); font-size: 10px; margin-top: 2px; }
+.bar { height: 5px; background: #23332e; border-radius: 10px; margin-top: 5px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--mint); border-radius: inherit; }
+.case { padding: 15px 0; border-bottom: 1px solid rgba(37,54,48,.65); }
+.case:first-child { padding-top: 0; }
+.case:last-child { border: 0; padding-bottom: 0; }
+.case-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.case-name { font-size: 14px; font-weight: 650; }
+.confidence { color: var(--mint); font-size: 12px; }
+.thesis { font-size: 12px; line-height: 1.7; margin: 9px 0; color: #c8d5ce; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { color: var(--muted); background: rgba(7,14,12,.6); border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; font-size: 10px; }
+.event { position: relative; padding: 0 0 15px 17px; border-left: 1px solid var(--line); margin-left: 4px; }
+.event:last-child { padding-bottom: 0; }
+.event::before { content: ''; position: absolute; left: -4px; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--mint); }
+.event.alert::before { background: var(--amber); }
+.event .event-title { font-size: 12px; line-height: 1.55; }
+.event .event-time { color: var(--muted); font-size: 10px; margin-top: 4px; }
+.empty { color: var(--muted); font-size: 12px; line-height: 1.7; padding: 18px 0; }
+.warning { border-left: 3px solid var(--amber); background: rgba(231,184,93,.07); padding: 10px 12px; color: #d9c59d; font-size: 11px; line-height: 1.6; margin-top: 12px; }
+.footer { color: #64776e; font-size: 10px; text-align: right; margin-top: 18px; }
+@media (max-width: 900px) {
+  .shell { padding: 22px 16px 50px; }
+  header { flex-direction: column; }
+  .status-row { justify-content: flex-start; }
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .layout { grid-template-columns: 1fr; }
 }
-.lamp.asleep {
-  background: var(--night);
-  box-shadow: 0 0 14px 3px rgba(154,163,181,.35);
-  animation-duration: 6s;
-}
-@keyframes breathe { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
-h1 {
-  display: inline;
-  font-size: 34px;
-  font-weight: 500;
-  letter-spacing: 6px;
-}
-.presence {
-  text-align: center;
-  color: var(--ink-soft);
-  font-size: 14px;
-  margin-top: 10px;
-}
-.signature {
-  text-align: center;
-  margin: 34px auto 0;
-  max-width: 460px;
-  font-size: 15.5px;
-  color: var(--ink);
-  opacity: .88;
-}
-.signature::before { content: '「 '; color: var(--pink); }
-.signature::after  { content: ' 」'; color: var(--pink); }
-
-/* 小节 */
-section { margin-top: 56px; }
-section h2 {
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--ink-soft);
-  letter-spacing: 3px;
-  margin-bottom: 18px;
-}
-.note {
-  background: var(--card);
-  border-radius: 14px;
-  padding: 14px 18px;
-  margin-bottom: 12px;
-}
-.note .t { font-size: 14.5px; margin-bottom: 2px; }
-.note .e { font-size: 13px; color: var(--ink-soft); line-height: 1.7; }
-.quote {
-  border-left: 3px solid var(--pink);
-  padding: 4px 0 4px 18px;
-  font-size: 14.5px;
-  white-space: pre-wrap;
-}
-.quote .d { font-size: 12px; color: var(--ink-soft); margin-bottom: 6px; }
-.about { font-size: 14.5px; opacity: .92; }
-
-/* 留言板 */
-.gb-msg {
-  background: var(--card);
-  border-radius: 14px;
-  padding: 12px 16px;
-  margin-bottom: 10px;
-  font-size: 14px;
-}
-.gb-msg .who { color: var(--pink); margin-right: 8px; }
-.gb-msg .when { float: right; font-size: 11.5px; color: var(--ink-soft); }
-.gb-form { display: flex; gap: 10px; margin-top: 16px; }
-.gb-form input[type=text] {
-  background: var(--card);
-  border: 1px solid var(--card-deep);
-  border-radius: 12px;
-  padding: 11px 16px;
-  font-size: 14px;
-  color: var(--ink);
-  font-family: inherit;
-  outline: none;
-}
-.gb-form input:focus { border-color: var(--pink); }
-#gb-name { width: 90px; }
-#gb-text { flex: 1; }
-.gb-form button {
-  background: var(--pink);
-  color: #fff;
-  border: none;
-  border-radius: 12px;
-  padding: 11px 20px;
-  font-size: 14px;
-  cursor: pointer;
-  font-family: inherit;
-}
-.gb-form button:hover { opacity: .85; }
-.gb-hint { font-size: 12px; color: var(--ink-soft); margin-top: 8px; }
-
-/* 角落的钟 */
-.clock {
-  position: fixed;
-  right: 22px; bottom: 18px;
-  font-size: 12.5px;
-  color: var(--ink-soft);
-  opacity: .8;
-}
-footer {
-  margin-top: 72px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--ink-soft);
-  opacity: .7;
+@media (max-width: 520px) {
+  .metrics { grid-template-columns: 1fr; }
+  .health-grid { grid-template-columns: 1fr; }
 }
 </style>
 </head>
 <body>
-<div class="room">
-
-  <div class="door"><span class="lamp" id="lamp"></span><h1>Shion</h1></div>
-  <div class="presence" id="presence">……</div>
-  <div class="signature" id="signature">清晰、准确、可验证</div>
-
-  <section>
-    <h2>最近知识</h2>
-    <div id="notes"><div class="note"><div class="e">暂无本地知识摘要</div></div></div>
-  </section>
-
-  <section>
-    <h2>最近记录</h2>
-    <div class="quote" id="diary"><span style="color:var(--ink-soft)">暂无近期记录</span></div>
-  </section>
-
-  <section>
-    <h2>工作方式</h2>
-    <p class="about">
-      Shion 是运行在你的服务器上的专业个人助理。<br>
-      负责检索、记忆、工具执行与多步骤任务跟进。<br>
-      高权限操作始终保留给用户最终确认。
-    </p>
-  </section>
-
-  <section>
-    <h2>留言板</h2>
-    <div id="gb-list"></div>
-    <div class="gb-form">
-      <input type="text" id="gb-name" placeholder="你是" maxlength="20">
-      <input type="text" id="gb-text" placeholder="留下信息…" maxlength="200">
-      <button onclick="leaveMessage()">提交</button>
+<main class="shell">
+  <header>
+    <div class="brand">
+      <div class="mark">S</div>
+      <div><h1>Shion · A 股投研台</h1><div class="subtitle">证据、风险与决策记录，不连接真实券商下单</div></div>
     </div>
-    <div class="gb-hint">留言会作为系统事件进入 Shion 的待处理队列</div>
+    <div class="status-row" id="status-pills"><span class="pill">连接中</span></div>
+  </header>
+
+  <section class="metrics">
+    <div class="metric"><div class="label">总市值</div><div class="value" id="m-value">--</div><div class="hint" id="m-value-hint">等待有效报价</div></div>
+    <div class="metric"><div class="label">持仓浮盈亏</div><div class="value" id="m-pnl">--</div><div class="hint" id="m-return">未计算</div></div>
+    <div class="metric"><div class="label">最大单票权重</div><div class="value" id="m-top">--</div><div class="hint" id="m-hhi">集中度未计算</div></div>
+    <div class="metric"><div class="label">止损风险暴露</div><div class="value" id="m-stop">--</div><div class="hint" id="m-stop-hint">等待风险快照</div></div>
   </section>
 
-  <footer>Shion · Self-hosted personal agent</footer>
-</div>
-<div class="clock" id="clock"></div>
+  <div class="layout">
+    <div class="stack">
+      <section class="card">
+        <div class="card-head"><div class="card-title">当前持仓与风险</div><div class="card-meta" id="risk-asof">--</div></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>标的</th><th>现价</th><th>市值</th><th>权重</th><th>浮盈亏</th><th>止损</th><th>行业</th></tr></thead>
+          <tbody id="positions"><tr><td colspan="7" class="empty">暂无持仓风险快照</td></tr></tbody>
+        </table></div>
+        <div id="risk-warning"></div>
+      </section>
 
+      <section class="card">
+        <div class="card-head"><div class="card-title">活跃投研假设</div><div class="card-meta" id="case-count">0 cases</div></div>
+        <div id="cases"><div class="empty">还没有 InvestmentCase。让 Shion 为关注标的建立可证伪的投资假设。</div></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><div class="card-title">最近回测</div><div class="card-meta" id="backtest-range">--</div></div>
+        <div class="health-grid" id="backtest-grid">
+          <div class="health-item"><span>策略</span><strong>--</strong></div>
+          <div class="health-item"><span>总收益</span><strong>--</strong></div>
+          <div class="health-item"><span>最大回撤</span><strong>--</strong></div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="stack">
+      <section class="card">
+        <div class="card-head"><div class="card-title">系统健康</div><div class="card-meta" id="revision">--</div></div>
+        <div class="health-grid">
+          <div class="health-item"><span>主模型</span><strong id="provider">未知</strong></div>
+          <div class="health-item"><span>Watchdog</span><strong id="watchdog">未知</strong></div>
+          <div class="health-item"><span>报价覆盖</span><strong id="quotes">--</strong></div>
+        </div>
+        <div id="health-warning"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><div class="card-title">告警与决策</div><div class="card-meta">最近记录</div></div>
+        <div id="events"><div class="empty">暂无告警或决策记录</div></div>
+      </section>
+    </aside>
+  </div>
+  <div class="footer" id="refreshed">等待首次刷新</div>
+</main>
 <script>
-const MOOD_CN = {
-  calm: '待命', missing: '等待联系', excited: '高活跃',
-  emo: '低活跃', sleepy: '休眠', active: '执行中',
-};
+const get = async p => { try { const r = await fetch(p); return r.ok ? await r.json() : null; } catch { return null; } };
+const esc = value => { const d = document.createElement('div'); d.textContent = value == null ? '' : String(value); return d.innerHTML; };
+const num = (v, digits=2) => Number.isFinite(Number(v)) ? Number(v).toLocaleString('zh-CN', { maximumFractionDigits: digits }) : '--';
+const money = v => Number.isFinite(Number(v)) ? '¥' + num(v, 2) : '--';
+const pct = v => Number.isFinite(Number(v)) ? (Number(v) * 100).toFixed(2) + '%' : '--';
+const shortTime = v => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '--';
+const tone = v => Number(v) > 0 ? 'positive' : Number(v) < 0 ? 'negative' : '';
 
-async function get(p) { try { const r = await fetch(p); return await r.json(); } catch { return null; } }
+function renderStatus(finance, status) {
+  const router = status && status.router_health;
+  const calendar = status && status.scheduler_calendar_health;
+  const wd = finance && finance.watchdog;
+  const pills = [
+    `<span class="pill ${status ? 'ok' : 'bad'}">${status ? '服务在线' : '服务不可达'}</span>`,
+    `<span class="pill ${!router || router.last_selected_role === 'fallback' ? 'warn' : 'ok'}">${!router ? '模型状态未知' : router.last_selected_role === 'fallback' ? 'Fallback 生效' : '主模型路由'}</span>`,
+    `<span class="pill ${wd && wd.status === 'healthy' ? 'ok' : wd && wd.status === 'degraded' ? 'bad' : 'warn'}">Watchdog ${esc(wd && wd.status || 'unknown')}</span>`,
+    calendar && calendar.enabled ? `<span class="pill ${calendar.status === 'healthy' ? 'ok' : 'bad'}">交易日历 ${esc(calendar.status)}</span>` : '',
+  ];
+  document.getElementById('status-pills').innerHTML = pills.filter(Boolean).join('');
+  document.getElementById('revision').textContent = status ? `v${status.version} · ${status.revision || 'dev'}` : '--';
+  document.getElementById('provider').textContent = router ? `${router.last_selected_provider || '未调用'} / ${router.primary_failures || 0}次主模型失败` : '未知';
+  document.getElementById('watchdog').textContent = wd ? `${wd.status} · ${shortTime(wd.last_tick_at)}` : '无快照';
+  document.getElementById('quotes').textContent = wd ? `${wd.quote_count || 0}/${wd.active_position_count || 0}` : '--';
+  const problems = [];
+  if (router && router.last_selected_role === 'fallback') problems.push(`当前最后成功路由是 fallback：${router.last_error || '主模型不可用'}`);
+  if (wd && wd.status === 'degraded') problems.push(wd.last_error || 'watchdog 处于 degraded');
+  if (calendar && calendar.status === 'degraded') problems.push(`交易日历降级：${calendar.last_error || '日历不可用、损坏或过期'}`);
+  document.getElementById('health-warning').innerHTML = problems.length ? `<div class="warning">${problems.map(esc).join('<br>')}</div>` : '';
+}
 
-function relTime(iso) {
-  const m = Math.round((Date.parse(iso) - Date.now()) / 60000);
-  if (m <= 1) return '马上';
-  if (m < 60) return m + ' 分钟后';
-  return (m / 60).toFixed(1).replace(/\.0$/, '') + ' 小时后';
+function renderRisk(finance) {
+  const r = finance && finance.portfolio_risk;
+  document.getElementById('m-value').textContent = r ? money(r.total_market_value) : '--';
+  document.getElementById('m-value-hint').textContent = r ? `${r.priced_position_count || 0} 个价格持仓` : '等待有效报价';
+  document.getElementById('m-pnl').textContent = r ? money(r.total_pnl) : '--';
+  document.getElementById('m-pnl').className = 'value ' + (r ? tone(r.total_pnl) : '');
+  document.getElementById('m-return').textContent = r ? `总回报 ${pct(r.total_return)}` : '未计算';
+  document.getElementById('m-top').textContent = r ? pct(r.top_weight) : '--';
+  document.getElementById('m-hhi').textContent = r ? `HHI ${num(r.hhi, 3)}` : '集中度未计算';
+  document.getElementById('m-stop').textContent = r ? money(r.max_loss_to_stop) : '--';
+  document.getElementById('m-stop-hint').textContent = r ? `${r.stop_covered_position_count || 0}/${r.priced_position_count || 0} 价格持仓有止损` : '等待风险快照';
+  document.getElementById('risk-asof').textContent = r ? `行情 ${shortTime(r.snapshot_as_of)}` : '--';
+  const rows = r && Array.isArray(r.positions) ? r.positions : [];
+  document.getElementById('positions').innerHTML = rows.length ? rows.map(p => `<tr>
+    <td><div class="stock-name">${esc(p.name)}</div><div class="stock-code">${esc(p.code)}</div></td>
+    <td>${p.price == null ? '--' : num(p.price)}</td><td>${p.market_value == null ? '--' : money(p.market_value)}</td>
+    <td>${p.weight == null ? '--' : `${pct(p.weight)}<div class="bar"><i style="width:${Math.min(100,p.weight*100)}%"></i></div>`}</td>
+    <td class="${tone(p.pnl)}">${p.pnl == null ? '--' : money(p.pnl)}</td><td>${p.stop_loss == null ? '<span class="negative">未设</span>' : num(p.stop_loss)}</td><td>${esc(p.sector || '--')}</td>
+  </tr>`).join('') : '<tr><td colspan="7" class="empty">暂无持仓风险快照</td></tr>';
+  const warnings = r && Array.isArray(r.warnings) ? r.warnings : [];
+  document.getElementById('risk-warning').innerHTML = warnings.length ? `<div class="warning">${warnings.slice(0,4).map(w => esc(w.message)).join('<br>')}</div>` : '';
+}
+
+function renderCases(finance) {
+  const cases = finance && Array.isArray(finance.investment_cases) ? finance.investment_cases : [];
+  document.getElementById('case-count').textContent = `${cases.length} cases`;
+  document.getElementById('cases').innerHTML = cases.length ? cases.map(c => `<article class="case">
+    <div class="case-top"><div class="case-name">${esc(c.name)} <span class="stock-code">${esc(c.code)}</span></div><div class="confidence">置信 ${pct(c.confidence)}</div></div>
+    <div class="thesis">${esc(c.thesis)}</div>
+    <div class="tags">${(Array.isArray(c.catalysts) ? c.catalysts : []).slice(0,2).map(x => `<span class="tag">催化 · ${esc(x)}</span>`).join('')}${(Array.isArray(c.risks) ? c.risks : []).slice(0,2).map(x => `<span class="tag">风险 · ${esc(x)}</span>`).join('')}<span class="tag">复盘 ${esc((c.review_at || '').slice(0,10))}</span></div>
+  </article>`).join('') : '<div class="empty">还没有 InvestmentCase。让 Shion 为关注标的建立可证伪的投资假设。</div>';
+}
+
+function renderEvents(finance) {
+  const decisions = finance && Array.isArray(finance.decisions) ? finance.decisions.slice(-6).reverse() : [];
+  const alerts = finance && Array.isArray(finance.alerts) ? finance.alerts.slice(-6).reverse() : [];
+  const items = [
+    ...alerts.map(text => ({ kind: 'alert', title: text, time: '盘中告警' })),
+    ...decisions.map(d => ({ kind: 'decision', title: `${d.action || 'decision'} · ${d.rationale || ''}`, time: shortTime(d.timestamp) })),
+  ].slice(0,10);
+  document.getElementById('events').innerHTML = items.length ? items.map(x => `<div class="event ${x.kind === 'alert' ? 'alert' : ''}"><div class="event-title">${esc(x.title)}</div><div class="event-time">${esc(x.time)}</div></div>`).join('') : '<div class="empty">暂无告警或决策记录</div>';
+}
+
+function renderBacktest(finance) {
+  const b = finance && finance.backtest;
+  const cells = document.querySelectorAll('#backtest-grid strong');
+  cells[0].textContent = b && (b.parameters && b.parameters.strategy_name || b.strategy || b.metadata && b.metadata.strategy) || '--';
+  cells[1].textContent = b ? pct(b.total_return ?? (b.metrics && b.metrics.total_return)) : '--';
+  cells[2].textContent = b ? pct(b.max_drawdown ?? (b.metrics && b.metrics.max_drawdown)) : '--';
+  const start = b && (b.data_range && b.data_range.start || b.start || '');
+  const end = b && (b.data_range && b.data_range.end || b.end || '');
+  document.getElementById('backtest-range').textContent = b ? `${start} → ${end}` : '--';
 }
 
 async function refresh() {
-  const s = await get('/api/status');
-  if (s) {
-    const lamp = document.getElementById('lamp');
-    const pres = document.getElementById('presence');
-    const mood = MOOD_CN[s.mood && s.mood.current] || '';
-    // 定了下次醒来的闹钟 = 在睡;没定 = 醒着(可能正在忙)
-    if (s.next_wake_at && Date.parse(s.next_wake_at) > Date.now()) {
-      lamp.classList.add('asleep');
-      pres.textContent = '已调度 · ' + relTime(s.next_wake_at) + '执行 · ' + mood;
-    } else {
-      lamp.classList.remove('asleep');
-      pres.textContent = '在线 · ' + mood;
-    }
-  }
-  const st = await get('/api/stream');
-  if (st && st.entries && st.entries.length) {
-    const last = [...st.entries].reverse().find(e => e.content && e.content.trim());
-    if (last) document.getElementById('signature').textContent = last.content.slice(0, 90);
-  }
-  const ns = await get('/api/recent-notes');
-  if (ns && ns.notes) {
-    document.getElementById('notes').innerHTML = ns.notes.slice(0, 3).map(n =>
-      `<div class="note"><div class="t">${esc(n.title)}</div><div class="e">${esc(n.excerpt)}</div></div>`
-    ).join('') || '<div class="note"><div class="e">暂无本地知识摘要</div></div>';
-  }
-  const d = await get('/api/diary-latest');
-  if (d && d.entry) {
-    document.getElementById('diary').innerHTML =
-      `<div class="d">${esc(d.entry.date || '')}</div>${esc(d.entry.text)}`;
-  }
-  loadGuestbook();
+  const [status, finance] = await Promise.all([get('/api/status'), get('/api/finance')]);
+  safeRender(renderStatus, finance, status); safeRender(renderRisk, finance, status); safeRender(renderCases, finance, status); safeRender(renderEvents, finance, status); safeRender(renderBacktest, finance, status);
+  document.getElementById('refreshed').textContent = `${status || finance ? '最后刷新' : '刷新失败'} ${new Date().toLocaleTimeString('zh-CN', {hour12:false})}`;
 }
-
-async function loadGuestbook() {
-  const g = await get('/api/guestbook');
-  if (g && g.messages) {
-    document.getElementById('gb-list').innerHTML = g.messages.slice(-5).reverse().map(m =>
-      `<div class="gb-msg"><span class="who">${esc(m.name)}</span>${esc(m.text)}<span class="when">${(m.time || '').slice(5, 16).replace('T', ' ')}</span></div>`
-    ).join('');
-  }
+function safeRender(render, finance, status) {
+  try { render(finance, status); } catch (error) { console.warn(`dashboard render failed: ${render.name}`, error); }
 }
-
-async function leaveMessage() {
-  const name = document.getElementById('gb-name').value.trim() || '访客';
-  const text = document.getElementById('gb-text').value.trim();
-  if (!text) return;
-  await fetch('/api/guestbook', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, text }),
-  });
-  document.getElementById('gb-text').value = '';
-  loadGuestbook();
-}
-
-function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
-
-function tick() {
-  const now = new Date();
-  document.getElementById('clock').textContent =
-    '服务器时间 ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
-}
-
-document.getElementById('gb-text').addEventListener('keydown', e => { if (e.key === 'Enter') leaveMessage(); });
-refresh();
-tick();
-setInterval(refresh, 30000);
-setInterval(tick, 5000);
+refresh(); setInterval(refresh, 30000);
 </script>
 </body>
 </html>

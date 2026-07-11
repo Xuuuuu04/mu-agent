@@ -192,3 +192,23 @@ test('portfolio: 坏 JSON → 当无持仓,不崩', () => {
     rmSync(dataDir, { recursive: true, force: true })
   }
 })
+
+test('investment cases: 只注入 active 的核心假设、置信度和失效条件', () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'mu-rel-cases-'))
+  try {
+    const memDir = join(dataDir, 'memory')
+    mkdirSync(memDir, { recursive: true })
+    writeFileSync(join(memDir, 'investment-cases.json'), JSON.stringify({ version: 1, cases: [
+      { id: 'case-1', code: '600519', name: '贵州茅台', thesis: '高端白酒品牌力延续', confidence: 0.72, invalidation: ['批价持续下降'], status: 'active', review_at: '2026-08-01T00:00:00.000Z' },
+      { id: 'case-2', code: '000001', name: '平安银行', thesis: '旧观点', confidence: 0.3, invalidation: ['x'], status: 'closed', review_at: '2026-07-01T00:00:00.000Z' },
+    ] }), 'utf-8')
+    const out = new RelationsLayer(dataDir).assemble()
+    assert.match(out, /活跃投研假设/)
+    assert.match(out, /600519 贵州茅台/)
+    assert.match(out, /置信0\.72/)
+    assert.match(out, /失效:批价持续下降/)
+    assert.doesNotMatch(out, /平安银行/)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})

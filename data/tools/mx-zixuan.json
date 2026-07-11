@@ -1,0 +1,9 @@
+{
+  "name": "mx_zixuan",
+  "description": "东方财富自选股管理:query(查自选)/add 股票/delete 股票,也接受自然语言。例:add 贵州茅台 / delete 600519 / query / 把比亚迪加到自选",
+  "parameters": {
+    "query": { "type": "string", "description": "命令或自然语言,如:add 贵州茅台 / query" }
+  },
+  "command": "./scripts/run-mx.sh zixuan \"{{query}}\"",
+  "max_output": 12000
+}

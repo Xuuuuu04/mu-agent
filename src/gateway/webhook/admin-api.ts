@@ -1,6 +1,6 @@
 // 面板/管理 API:她的 Web 小房间和管理命令的只读查询 + 受限写入(config/soul/留言板)。
 // 从主网关剥出来,让 WebhookGateway 回到"网关"本质。所有路由经 tryHandle 分发。
-import { VERSION } from '../../version.js'
+import { VERSION, REVISION, BUILD_TIME } from '../../version.js'
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import YAML from 'yaml'
@@ -41,6 +41,7 @@ export class AdminApi {
         case '/api/todos': this.handleTodos(res); return true
         case '/api/mood': this.handleMood(res); return true
         case '/api/tools': this.handleTools(res); return true
+        case '/api/finance': this.handleFinance(res); return true
         case '/api/logs': this.handleLogs(res, params); return true
         case '/api/config': this.handleConfigGet(res); return true
         case '/api/soul': this.handleSoulGet(res, params); return true
@@ -58,6 +59,8 @@ export class AdminApi {
   private handleStatus(res: ServerResponse): void {
     sendJson(res, {
       version: VERSION,
+      revision: REVISION,
+      build_time: BUILD_TIME,
       uptime: process.uptime(),
       episodes: this.store?.getEpisodeCount() ?? 0,
       memory_rss: Math.round(process.memoryUsage.rss() / 1024 / 1024),
@@ -99,6 +102,85 @@ export class AdminApi {
 
   private handleTools(res: ServerResponse): void {
     sendJson(res, { tools: this.opts.getTools?.() ?? [] })
+  }
+
+  // 轻量投研工作台只读聚合:一个请求拿到持仓/研究假设/决策/风险/告警。
+  // 每个数据源独立降级,某个 JSON 损坏不应让整个面板 500。
+  private handleFinance(res: ServerResponse): void {
+    const positions = this.readJsonFile('memory/portfolio.json')
+    const caseState = this.readJsonFile('memory/investment-cases.json')
+    const decisionState = this.readJsonFile('memory/decision-journal.json')
+    const cases = this.arrayField(caseState, 'cases').map(item => this.caseView(item)).filter(item => item !== null)
+    const decisions = this.arrayField(decisionState, 'entries').map(item => this.decisionView(item)).filter(item => item !== null)
+    sendJson(res, {
+      positions: Array.isArray(positions)
+        ? positions.filter(p => (p as { status?: string }).status === 'active')
+        : [],
+      investment_cases: Array.isArray(cases)
+        ? cases.filter(c => (c as { status?: string }).status === 'active')
+        : [],
+      decisions: Array.isArray(decisions) ? decisions.slice(-50) : [],
+      alerts: this.readRecentAlertLines(20),
+      watchdog: this.readJsonFile('memory/watchdog-health.json'),
+      portfolio_risk: this.objectView(this.readJsonFile('memory/portfolio-risk-latest.json')),
+      backtest: this.objectView(this.readJsonFile('backtest/latest-report.json')),
+      simulation_analysis: this.objectView(this.readJsonFile('backtest/latest-simulation-analysis.json')),
+    })
+  }
+
+  private readRecentAlertLines(limit: number): string[] {
+    if (!this.opts.dataDir) return []
+    const path = join(this.opts.dataDir, 'memory', 'alerts.log')
+    if (!existsSync(path)) return []
+    try {
+      return readFileSync(path, 'utf-8').split('\n').filter(Boolean).slice(-limit)
+    } catch {
+      return []
+    }
+  }
+
+  private arrayField(value: unknown, field: string): unknown[] {
+    if (Array.isArray(value)) return value // 兼容早期未加 version envelope 的本地数据
+    if (!value || typeof value !== 'object') return []
+    const nested = (value as Record<string, unknown>)[field]
+    return Array.isArray(nested) ? nested : []
+  }
+
+  private objectView(value: unknown): Record<string, unknown> | null {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null
+  }
+
+  private caseView(value: unknown): Record<string, unknown> | null {
+    const item = this.objectView(value)
+    if (!item || item.status !== 'active') return null
+    for (const key of ['id', 'code', 'name', 'thesis', 'review_at']) {
+      if (item[key] !== undefined && typeof item[key] !== 'string') return null
+    }
+    if (item.confidence !== undefined
+      && (typeof item.confidence !== 'number' || !Number.isFinite(item.confidence))) return null
+    return {
+      ...(item.id === undefined ? {} : { id: item.id }),
+      status: 'active',
+      ...(item.code === undefined ? {} : { code: item.code }),
+      ...(item.name === undefined ? {} : { name: item.name }),
+      ...(item.thesis === undefined ? {} : { thesis: item.thesis }),
+      ...(item.confidence === undefined ? {} : { confidence: item.confidence }),
+      catalysts: Array.isArray(item.catalysts) ? item.catalysts.filter(x => typeof x === 'string') : [],
+      risks: Array.isArray(item.risks) ? item.risks.filter(x => typeof x === 'string') : [],
+      ...(item.review_at === undefined ? {} : { review_at: item.review_at }),
+    }
+  }
+
+  private decisionView(value: unknown): Record<string, unknown> | null {
+    const item = this.objectView(value)
+    if (!item) return null
+    for (const key of ['id', 'action', 'rationale', 'timestamp']) {
+      if (item[key] !== undefined && typeof item[key] !== 'string') return null
+    }
+    return Object.fromEntries(['id', 'action', 'rationale', 'timestamp']
+      .filter(key => item[key] !== undefined).map(key => [key, item[key]]))
   }
 
   private handleLogs(res: ServerResponse, params: URLSearchParams): void {

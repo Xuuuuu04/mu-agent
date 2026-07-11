@@ -1,6 +1,6 @@
 {
   "name": "mu-agent",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Shion — 自托管的专业个人 AI 助理",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
@@ -20,7 +20,7 @@
     "test": "tsx --test --test-force-exit \"src/**/*.test.ts\"",
     "test:coverage": "c8 --check-coverage --lines 80 --functions 80 --branches 75 --statements 80 --reporter=text --reporter=json-summary tsx --test --test-force-exit \"src/**/*.test.ts\"",
     "test:watch": "tsx --test --watch \"src/**/*.test.ts\"",
-    "test:py": "python3 -m unittest scripts.test_bridge_pure",
+    "test:py": "python3 -m unittest discover -s scripts -p 'test*.py'",
     "pretest": "tsc --noEmit"
   },
   "dependencies": {

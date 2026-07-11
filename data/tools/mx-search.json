@@ -1,0 +1,9 @@
+{
+  "name": "mx_search",
+  "description": "东方财富资讯搜索:财经新闻、公告、研报。自然语言搜,返回文本摘要。例:最近关于降息的新闻、某公司最新公告",
+  "parameters": {
+    "query": { "type": "string", "description": "搜索问句,如:央行最新降息 / 宁德时代最新公告" }
+  },
+  "command": "./scripts/run-mx.sh search \"{{query}}\"",
+  "max_output": 18000
+}

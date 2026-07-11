@@ -1,0 +1,4 @@
+# Install into an isolated virtual environment; do not install globally.
+numpy>=1.26,<3
+pandas>=2.1,<4
+akshare>=1.14

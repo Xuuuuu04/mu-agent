@@ -63,9 +63,9 @@ export function requestShellExecution(command: string, timeoutMs = 30_000): Tool
 
 // operator 投喂的预置工具（data/tools/*.json，如 ring_bell/phone）走这里：是受信任工具不是模型自造 shell，
 // 直接执行以保留自主性（自决唤醒/proactive 是内心独白，批准号无人接收）。只保留 BLOCKED_PATTERNS 拦灾难命令。
-export function runPresetShell(command: string, timeoutMs = 30_000): ToolResult {
+export function runPresetShell(command: string, timeoutMs = 30_000, maxOutput = 10_000): ToolResult {
   if (isBlockedShellCommand(command)) return { success: false, output: '', error: `危险命令被阻止: ${command}` }
-  return runShell(command, timeoutMs)
+  return runShell(command, timeoutMs, maxOutput)
 }
 
 // 只从零 token 的用户命令拦截器调用；LLM 工具 schema 不暴露这个函数。
@@ -112,7 +112,7 @@ function isSafeReadOnlyCommand(command: string): boolean {
   return false
 }
 
-function runShell(command: string, timeoutMs: number): ToolResult {
+function runShell(command: string, timeoutMs: number, maxOutput = 10_000): ToolResult {
   try {
     const output = execSync(command, {
       timeout: timeoutMs,
@@ -120,8 +120,11 @@ function runShell(command: string, timeoutMs: number): ToolResult {
       maxBuffer: 1024 * 1024,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
-    const trimmed = output.length > 10000
-      ? output.slice(0, 10000) + '\n...(输出截断)'
+    // 大输出工具(如美团酒旅富结果)可在 preset 里声明 max_output 放大;默认 10K。
+    // cap 上限 100K:maxBuffer 才 1MB,且 compaction 会浓缩旧消息,100K 内不会爆上下文。
+    const cap = Math.min(maxOutput, 100_000)
+    const trimmed = output.length > cap
+      ? output.slice(0, cap) + '\n...(输出截断)'
       : output
     return { success: true, output: trimmed }
   } catch (err) {

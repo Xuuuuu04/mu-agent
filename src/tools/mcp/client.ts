@@ -122,7 +122,7 @@ export class McpClient {
       })
     } catch (e) {
       clearTimeout(timer)
-      throw new Error(`mcp ${this.config.name} ${method} 网络错误: ${(e as Error).message}`)
+      throw new Error(`mcp ${this.config.name} ${method} 网络错误: ${(e as Error).message}`, { cause: e })
     }
     clearTimeout(timer)
     if (!res.ok) throw new Error(`mcp ${this.config.name} ${method} HTTP ${res.status}`)

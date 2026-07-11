@@ -30,6 +30,12 @@ import {
 import { toolCreateTool } from './tools/builtin/tool-create.js'
 import { voiceSendTool } from './tools/builtin/voice-send.js'
 import { imageGenTool } from './tools/builtin/image-gen.js'
+import { downloadImageTool } from './tools/builtin/download-image.js'
+import {
+  investmentCaseListTool, investmentCaseUpsertTool, investmentEvidenceAppendTool,
+  investmentDecisionListTool, investmentDecisionRecordTool, portfolioRiskAnalyzeTool,
+  aStockBacktestTool, mxAnalyzeTool,
+} from './tools/builtin/finance/index.js'
 import {
   taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool,
 } from './tools/builtin/task.js'
@@ -68,10 +74,13 @@ async function main() {
 
   const tools = new ToolRegistry()
   for (const t of [fileReadTool, fileWriteTool, fileListTool, shellExecTool, webFetchTool, webSearchTool,
-    messageSendTool, scheduleWakeTool, voiceSendTool, imageGenTool,
+    messageSendTool, scheduleWakeTool, voiceSendTool, imageGenTool, downloadImageTool,
     memorySaveTool, memorySearchTool, memoryUpdateTool, memoryForgetTool, knowledgeWriteTool,
     commitmentCreateTool, commitmentDoneTool, streamNoteTool, diaryWriteTool, toolCreateTool,
     portfolioAddTool, portfolioUpdateTool, portfolioRemoveTool,
+    investmentCaseListTool, investmentCaseUpsertTool, investmentEvidenceAppendTool,
+    investmentDecisionListTool, investmentDecisionRecordTool, portfolioRiskAnalyzeTool,
+    aStockBacktestTool, mxAnalyzeTool,
     taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool,
     spawnSubagentTool, spawnParallelTool]) {
     tools.register(t, { reserved: true })
@@ -138,6 +147,8 @@ async function main() {
       return {
         last_success_at: h.lastSuccessAt?.toISOString() ?? null,
         consecutive_failures: h.consecutiveFailures,
+        router_health: router.getHealthSnapshot(),
+        scheduler_calendar_health: scheduler.getCalendarHealthSnapshot(),
         next_wake_at: sched.sleeping && sched.nextWake ? sched.nextWake.toISOString() : null,
         next_wake_reason: sched.sleeping ? sched.reason : null,
       }

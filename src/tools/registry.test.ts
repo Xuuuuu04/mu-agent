@@ -29,6 +29,67 @@ test('register + get + list + size:基本登记', () => {
   assert.equal(r.get('missing'), undefined)
 })
 
+test('toAnthropicTools: 内部 required:false 只用于计算顶层 required,不泄漏成非标准 JSON Schema 关键字', () => {
+  const r = new ToolRegistry()
+  r.register({
+    name: 'schema_test', description: 'x',
+    parameters: {
+      required_value: { type: 'string', description: 'required' },
+      optional_value: { type: 'number', description: 'optional', required: false },
+    },
+    execute: async () => ({ success: true, output: '' }),
+  })
+  const schema = r.toAnthropicTools()[0]!.input_schema
+  const properties = schema.properties as Record<string, Record<string, unknown>>
+  assert.deepEqual(schema.required, ['required_value'])
+  assert.deepEqual(properties.optional_value, { type: 'number', description: 'optional' })
+  assert.equal('required' in properties.optional_value!, false)
+})
+
+test('get:精确名不存在时按 __ 后缀解析唯一 MCP 工具', () => {
+  const r = new ToolRegistry()
+  r.register(makeTool('ifind-stock__stock_highfreq_quotes'))
+
+  const resolved = r.resolveBySuffix('hexin-ifind-stock__stock_highfreq_quotes')
+  assert.equal(resolved.status, 'found')
+  assert.equal(resolved.name, 'ifind-stock__stock_highfreq_quotes')
+  assert.equal(r.get('hexin-ifind-stock__stock_highfreq_quotes')?.name, 'ifind-stock__stock_highfreq_quotes')
+})
+
+test('resolveBySuffix:零匹配返回确定性 not_found 结果', () => {
+  const r = new ToolRegistry()
+  r.register(makeTool('other__unrelated'))
+
+  assert.deepEqual(r.resolveBySuffix('missing__stock_highfreq_quotes'), {
+    status: 'not_found',
+    query: 'missing__stock_highfreq_quotes',
+    suffix: 'stock_highfreq_quotes',
+    matches: [],
+  })
+})
+
+test('resolveBySuffix:多匹配按名称排序并拒绝猜测', () => {
+  const r = new ToolRegistry()
+  r.register(makeTool('z-server__stock_highfreq_quotes'))
+  r.register(makeTool('a-server__stock_highfreq_quotes'))
+
+  assert.deepEqual(r.resolveBySuffix('legacy__stock_highfreq_quotes'), {
+    status: 'ambiguous',
+    query: 'legacy__stock_highfreq_quotes',
+    suffix: 'stock_highfreq_quotes',
+    matches: ['a-server__stock_highfreq_quotes', 'z-server__stock_highfreq_quotes'],
+  })
+  assert.equal(r.get('legacy__stock_highfreq_quotes'), undefined)
+})
+
+test('get:不把无 __ 的内置工具名降级解析到 MCP 后缀', () => {
+  const r = new ToolRegistry()
+  r.register(makeTool('untrusted-mcp__file_read'))
+
+  assert.equal(r.get('file_read'), undefined)
+  assert.equal(r.resolveBySuffix('file_read').status, 'found', '显式 suffix 诊断仍可用')
+})
+
 test('reserved 工具不能被后续同名注册顶替(安全核心)', async () => {
   const r = new ToolRegistry()
   r.register(makeTool('file_read', 'BUILTIN'), { reserved: true })
@@ -126,8 +187,8 @@ test('toAnthropicTools:无 requiredKeys 时按 per-property required!==false 推
   assert.equal(schema.type, 'object')
   assert.deepEqual(schema.properties, {
     a: { type: 'string' },
-    b: { type: 'string', required: true },
-    c: { type: 'string', required: false },
+    b: { type: 'string' },
+    c: { type: 'string' },
   })
   assert.deepEqual((schema.required as string[]).sort(), ['a', 'b'])
 })

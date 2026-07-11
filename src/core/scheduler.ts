@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import type { MuConfig, MoodState, WakeTrigger } from './types.js'
 import type { MemoryStore } from '../memory/store.js'
 import { atomicWriteJsonSync } from './atomic-file.js'
-import { beijingHour, getMarketPhase, loadTradeCalendarFile, type MarketPhase, type TradeCalendar } from './market-hours.js'
+import { beijingDateStr, beijingHour, getMarketPhase, loadTradeCalendarFile, type MarketPhase, type TradeCalendar } from './market-hours.js'
 
 export type WakeKind = 'reminder' | 'task' | 'rest'
 
@@ -14,6 +14,14 @@ export interface ScheduledWake {
   activity_type: string
   kind: WakeKind
   interruptible: boolean
+}
+
+export interface SchedulerCalendarHealthSnapshot {
+  enabled: boolean
+  status: 'disabled' | 'healthy' | 'degraded'
+  path: string | null
+  last_checked_at: string | null
+  last_error: string | null
 }
 
 interface WakeFile {
@@ -33,7 +41,14 @@ export class Scheduler {
   private lastSuccessProbe: (() => Date | null) | null = null
   private readonly startedAt = Date.now()
   // 交易日历 mtime 缓存:文件没动就不重读重解析。键 = path + mtimeMs。
-  private calendarCache: { path: string; mtimeMs: number; cal: TradeCalendar | null } | null = null
+  private calendarCache: { path: string; mtimeMs: number; beijingDate: string; cal: TradeCalendar | null } | null = null
+  private calendarHealth: SchedulerCalendarHealthSnapshot = {
+    enabled: false,
+    status: 'disabled',
+    path: null,
+    last_checked_at: null,
+    last_error: null,
+  }
 
   constructor(config: MuConfig, store: MemoryStore) {
     this.config = config
@@ -235,6 +250,14 @@ export class Scheduler {
     }
   }
 
+  getCalendarHealthSnapshot(): SchedulerCalendarHealthSnapshot {
+    if (!this.config.scheduler.a_stock?.enabled) {
+      return { enabled: false, status: 'disabled', path: null, last_checked_at: null, last_error: null }
+    }
+    this.loadCalendarCached()
+    return { ...this.calendarHealth }
+  }
+
   private persistWakes(): void {
     try {
       atomicWriteJsonSync(this.wakesPath(), { version: 2, wakes: this.wakes })
@@ -260,7 +283,7 @@ export class Scheduler {
     // beijingHour 修复(R1 抓的时区撕裂):marketPhase 按北京时间算,night 也必须按北京时间算,
     // 否则非 CST 部署盘中 morning 会被系统 getHours 判成 night,市场下限静默失效。
     const a = s.a_stock
-    const marketPhase = a?.enabled && a.calendar_path ? this.currentMarketPhase() : null
+    const marketPhase = a?.enabled ? this.currentMarketPhase() : null
     return clampWake(seconds, {
       hour: beijingHour(new Date()),
       nightStart: s.night_start_hour,
@@ -274,27 +297,49 @@ export class Scheduler {
     })
   }
 
-  // 当前 A 股时段。a_stock 未启用 / 无日历 → null(等同于不叠加市场下限)。
-  private currentMarketPhase(): MarketPhase | null {
+  // 当前 A 股时段。日历不可用时仍按 weekday/time fallback,同时由 calendar health 暴露降级。
+  private currentMarketPhase(): MarketPhase {
     const cal = this.loadCalendarCached()
-    if (!cal) return null
     return getMarketPhase(new Date(), cal)
   }
 
-  // 读日历并 mtime 缓存。文件缺失/坏/过期全返 null,绝不抛 —— 日历问题降级成“仅周末推理”,不拖垮调度。
+  // 读日历并 mtime 缓存。文件缺失/坏/过期全返 null,绝不抛；调用方继续用 weekday/time fallback。
   private loadCalendarCached(): TradeCalendar | null {
-    const path = this.config.scheduler.a_stock?.calendar_path
-    if (!path) return null
+    const path = this.calendarPath()
+    const checkedAt = new Date().toISOString()
+    const today = beijingDateStr()
     try {
       const st = statSync(path) // 文件不存在抛 → catch → null
-      if (this.calendarCache && this.calendarCache.path === path && this.calendarCache.mtimeMs === st.mtimeMs) {
+      if (this.calendarCache
+        && this.calendarCache.path === path
+        && this.calendarCache.mtimeMs === st.mtimeMs
+        && this.calendarCache.beijingDate === today) {
+        this.setCalendarHealth(path, checkedAt, this.calendarCache.cal)
         return this.calendarCache.cal
       }
       const cal = loadTradeCalendarFile(path) // 内部再校验 schema + stale,任一不过返 null
-      this.calendarCache = { path, mtimeMs: st.mtimeMs, cal }
+      this.calendarCache = { path, mtimeMs: st.mtimeMs, beijingDate: today, cal }
+      this.setCalendarHealth(path, checkedAt, cal)
       return cal
     } catch {
+      this.calendarCache = null
+      this.setCalendarHealth(path, checkedAt, null)
       return null
+    }
+  }
+
+  private calendarPath(): string {
+    return this.config.scheduler.a_stock?.calendar_path
+      ?? join(this.config.paths.data, 'memory', 'trade-calendar.json')
+  }
+
+  private setCalendarHealth(path: string, checkedAt: string, cal: TradeCalendar | null): void {
+    this.calendarHealth = {
+      enabled: true,
+      status: cal ? 'healthy' : 'degraded',
+      path,
+      last_checked_at: checkedAt,
+      last_error: cal ? null : 'calendar unavailable, invalid, or stale',
     }
   }
 

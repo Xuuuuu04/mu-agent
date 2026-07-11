@@ -1,6 +1,21 @@
 node_modules/
 dist/
-data/
+# 运行数据默认忽略;只把可复现的 A 股工具/技能定义收进 Git。
+data/*
+!data/tools/
+data/tools/*
+!data/tools/mx-data.json
+!data/tools/mx-moni.json
+!data/tools/mx-poster.json
+!data/tools/mx-search.json
+!data/tools/mx-xuangu.json
+!data/tools/mx-zixuan.json
+!data/tools/a-stock-backtest.json
+!data/tools/mx-analyze.json
+!data/skills/
+data/skills/*
+!data/skills/a-stock-morning.md
+!data/skills/a-stock-review.md
 /soul/
 config/config.yaml
 *.env

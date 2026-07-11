@@ -1,0 +1,14 @@
+{
+  "name": "mx_analyze",
+  "description": "分析已标准化的模拟盘 JSON 快照/成交账本，计算盈亏、暴露、集中度，并可与回测成交对比。不解析厂商自然语言输出，不调用模拟交易或真实券商接口。",
+  "parameters": {
+    "snapshot_path": {
+      "type": "string",
+      "description": "符合 scripts/simulation/README.md schema_version=1 的本地 JSON 路径",
+      "maxLength": 512
+    }
+  },
+  "required": ["snapshot_path"],
+  "command": "./scripts/run-simulation-analysis.sh --snapshot \"{{snapshot_path}}\" --backtest ./data/backtest/latest-report.json",
+  "max_output": 12000
+}

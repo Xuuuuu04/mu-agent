@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
 import type { MuConfig, WakeTrigger, CycleResult } from './types.js'
 import { ContextAssembler } from './context-assembler.js'
 import { ModelRouter } from '../providers/router.js'
@@ -108,7 +109,11 @@ export class AgentLoop {
 
       const { system } = await this.assembler.assemble(trigger, currentInput)
       // 工具列表实时取,热加载/MCP 后续注册的也能被模型看到
-      const toolDefs = this.tools.toAnthropicTools()
+      const allToolDefs = this.tools.toAnthropicTools()
+      // 金融 cycle 的语义已明确,没必要把地图/火车/微博/Playwright 等全部 schema
+      // 塞给 provider。这不仅浪费几万 input token,也会扩大严格 API 拒绝整个 tools 参数的概率。
+      const financialCycle = isFinancialTrigger(trigger, loadKnownFinancialEntities(this.config.paths.data))
+      const toolDefs = financialCycle ? selectFinancialTools(allToolDefs) : allToolDefs
 
       // 本次 cycle 的消息往哪发:消息触发就回到来源网关,自主唤醒走 autonomous
       const replySource = trigger.type === 'message' ? trigger.message.source : 'autonomous'
@@ -187,6 +192,9 @@ export class AgentLoop {
         budgetMs,
         maxTokens: this.config.model.primary.max_tokens ?? 4096,
         thinking: isSimpleChat ? 'disabled' : undefined,
+        // 真金白银场景不能在主模型故障时静默降级到已知会编造数字的 fallback。
+        // watchdog 仍是确定性链路,不依赖模型;普通生活对话保留 fallback 自愈。
+        fallbackPolicy: financialCycle ? 'deny' : undefined,
         executeTool: (name, input) => this.tools.execute(name, input, {
           config: this.config,
           dataDir: this.config.paths.data,
@@ -408,6 +416,71 @@ export class AgentLoop {
   get health(): { lastSuccessAt: Date | null; consecutiveFailures: number } {
     return { lastSuccessAt: this.lastSuccessAt, consecutiveFailures: this.consecutiveFailures }
   }
+}
+
+const A_SHARE_CODE = /(?<!\d)[034689]\d{5}(?!\d)/
+const EXPLICIT_FINANCE_INTENT = /A\s*股|股票|股价|行情|持仓|仓位|买入|加仓|补仓|减仓|清仓|止损|止盈|估值|财报|研报|回测|选股|模拟盘|ETF|指数|板块|盈亏|证券|交易策略|投资(?:组合|策略|收益|标的|逻辑|建议|风险)|基金(?:净值|持仓|定投|申购|赎回|配置|经理|产品)/i
+const LISTED_COMPANY_SUBJECT = /(?:\*?ST)?[A-Za-z\u4e00-\u9fff]{1,12}(?:公司|银行|证券|保险|股份|集团|控股|科技|能源|电力|医药|制药|汽车|电子|光电|通信|材料|矿业|航空|重工|食品|茅台)/i
+const BUY_SELL_HOLD_QUESTION = /怎么看|如何看|(?:现在|目前|还)?(?:能买吗|能不能买|可以买|值得买)|(?:要不要|该不该|是否适合).{0,6}(?:买|卖|拿|持有|补仓|加仓|减仓|清仓)|(?:继续)(?:拿着|持有)/
+
+// 金融 cycle 是 fail-closed 安全边界。明确金融术语/6 位 A 股代码直接命中；
+// “公司名 + 买卖持有疑问”单独覆盖口语问法。刻意不使用裸 投资/基金/卖出，避免生活语义误报。
+export function isFinancialIntentText(text: string, knownEntities: ReadonlySet<string> = new Set()): boolean {
+  const normalized = text.trim()
+  if (!normalized) return false
+  return A_SHARE_CODE.test(normalized)
+    || EXPLICIT_FINANCE_INTENT.test(normalized)
+    || (LISTED_COMPANY_SUBJECT.test(normalized) && BUY_SELL_HOLD_QUESTION.test(normalized))
+    || (BUY_SELL_HOLD_QUESTION.test(normalized)
+      && [...knownEntities].some(entity => entity.length > 0 && normalized.includes(entity)))
+}
+
+function isFinancialTrigger(trigger: WakeTrigger, knownEntities: ReadonlySet<string>): boolean {
+  let text = ''
+  if (trigger.type === 'message' && trigger.message.content.type === 'text') text = trigger.message.content.text
+  else if (trigger.type === 'self_scheduled' || trigger.type === 'cron_fallback' || trigger.type === 'manual') text = trigger.reason
+  else if (trigger.type === 'system_event') text = trigger.event
+  else if (trigger.type === 'webhook') text = `${trigger.source} ${JSON.stringify(trigger.payload).slice(0, 1000)}`
+  return isFinancialIntentText(text, knownEntities)
+}
+
+function loadKnownFinancialEntities(dataDir: string): Set<string> {
+  const entities = new Set<string>()
+  const load = (file: string, field?: string): unknown[] => {
+    try {
+      const path = join(dataDir, 'memory', file)
+      if (!existsSync(path)) return []
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown
+      if (Array.isArray(parsed)) return parsed
+      if (!parsed || typeof parsed !== 'object' || !field) return []
+      const nested = (parsed as Record<string, unknown>)[field]
+      return Array.isArray(nested) ? nested : []
+    } catch { return [] }
+  }
+  for (const item of [...load('portfolio.json', 'positions'), ...load('investment-cases.json', 'cases')]) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    if (record.status !== 'active') continue
+    for (const key of ['name', 'code']) {
+      const value = record[key]
+      if (typeof value === 'string' && value.trim()) entities.add(value.trim())
+    }
+  }
+  return entities
+}
+
+const FINANCE_CORE_TOOLS = new Set([
+  'file_read', 'file_write', 'file_list', 'web_search', 'web_fetch',
+  'memory_save', 'memory_search', 'memory_update', 'memory_forget', 'knowledge_write',
+  'commitment_create', 'commitment_done', 'stream_note', 'diary_write',
+  'message_send', 'schedule_wake',
+  'task_create', 'task_list', 'task_update', 'task_review', 'task_delete',
+  'spawn_subagent', 'spawn_parallel', 'shell_exec',
+])
+
+function selectFinancialTools<T extends { name: string }>(tools: T[]): T[] {
+  return tools.filter(tool => FINANCE_CORE_TOOLS.has(tool.name)
+    || /^(?:portfolio_|investment_|mx_|a_stock_|ifind-|hexin-ifind-)/.test(tool.name))
 }
 
 function jsonOrNull(arr: string[]): string | null {

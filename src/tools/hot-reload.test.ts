@@ -72,3 +72,33 @@ test('HotReloader: 加载 echo 工具,正常参数执行、注入参数被拒(�
     rmSync(toolsDir, { recursive: true, force: true })
   }
 })
+
+// max_output:大输出工具(如美团酒旅)在 JSON 声明后放宽截断;默认仍 10K,硬上限 100K
+test('HotReloader: max_output 声明放宽截断(大输出工具),不声明走默认 10K', async () => {
+  const toolsDir = mkdtempSync(join(tmpdir(), 'mu-hotreload-'))
+  const registry = new ToolRegistry()
+  const hr = new HotReloader(toolsDir, registry)
+  try {
+    // 声明 max_output 30000 的工具:输出 20K 不该被截
+    writeFileSync(join(toolsDir, 'big.json'), JSON.stringify({
+      name: 'big', description: 't',
+      parameters: {},
+      command: 'printf %s "$(seq 1 20000 | tr -d "\\n")"',   // ~20K 数字串,无空格无换行
+      max_output: 30000,
+    }), 'utf-8')
+    // 不声明的工具:输出 20K 该被截到 10K
+    writeFileSync(join(toolsDir, 'small.json'), JSON.stringify({
+      name: 'small', description: 't',
+      parameters: {},
+      command: 'printf %s "$(seq 1 20000 | tr -d "\\n")"',
+    }), 'utf-8')
+    hr.start()
+    const big = await registry.get('big')!.execute({}, {} as never)
+    const small = await registry.get('small')!.execute({}, {} as never)
+    assert.ok(big.output.length > 15000, `声明 max_output 的应放行(实际 ${big.output.length})`)
+    assert.ok(small.output.length < 11000 && small.output.includes('...(输出截断)'), `默认应截到 10K(实际 ${small.output.length})`)
+  } finally {
+    hr.stop()
+    rmSync(toolsDir, { recursive: true, force: true })
+  }
+})
