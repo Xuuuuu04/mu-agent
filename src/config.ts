@@ -81,6 +81,7 @@ function validate(config: MuConfig): void {
       ['interval_seconds', wd.interval_seconds ?? 180, 30, 1800],
       ['auction_interval_seconds', wd.auction_interval_seconds ?? 60, 15, 300],
       ['close_auction_interval_seconds', wd.close_auction_interval_seconds ?? 30, 10, 120],
+      ['event_interval_seconds', wd.event_interval_seconds ?? 900, 300, 3600],
     ] as const
     for (const [name, value, min, max] of cadence) {
       if (!Number.isFinite(value) || value < min || value > max) {

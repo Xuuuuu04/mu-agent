@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { Position } from './types.js'
-import { WatchdogManager, checkTriggers, parseIfindPrices } from './watchdog.js'
+import { WatchdogManager, checkTriggers, parseIfindPrices, parseIfindQuotePoints } from './watchdog.js'
 
 const pos = (over: Partial<Position>): Position => ({
   id: 'p1', code: '003816', name: '中国广核', qty: 100, cost: 3.87,
@@ -57,6 +57,7 @@ test('parseIfindPrices: 解析 iFind real_time 嵌套 JSON', () => {
   const m = parseIfindPrices(outer)
   assert.equal(m.get('003816'), 3.88)
   assert.equal(m.get('600519'), 1199.3)
+  assert.deepEqual(parseIfindQuotePoints(outer).get('003816'), { price: 3.88, asOf: '2026-07-08T08:01:21.000Z' })
 })
 
 test('parseIfindPrices: 坏 JSON → 空 map 不抛', () => {
@@ -80,12 +81,12 @@ function withDir(positions: Position[] | null, fn: (dir: string) => Promise<void
 
 test('parseIfindPrices: 只接受 finite 且严格大于零的价格', () => {
   const inner = { tables: [
-    ['证券代码', '最新价'],
-    ['000001.SZ', '0'],
-    ['000002.SZ', '-1'],
-    ['000003.SZ', 'NaN'],
-    ['000004.SZ', 'Infinity'],
-    ['000005.SZ', '12.34'],
+    ['证券代码', '最新价', 'time'],
+    ['000001.SZ', '0', '2026-07-13 10:00:00'],
+    ['000002.SZ', '-1', '2026-07-13 10:00:00'],
+    ['000003.SZ', 'NaN', '2026-07-13 10:00:00'],
+    ['000004.SZ', 'Infinity', '2026-07-13 10:00:00'],
+    ['000005.SZ', '12.34', '2026-07-13 10:00:00'],
   ] }
   const prices = parseIfindPrices(JSON.stringify({ data: JSON.stringify(inner) }))
   assert.deepEqual([...prices.entries()], [['000005', 12.34]])
@@ -172,6 +173,47 @@ test('tick: 触止损 → 告警投递 + alerts.log + state 记冷却', () => wi
   // state 落盘
   const st = JSON.parse(readFileSync(join(dir, 'memory', 'watchdog-state.json'), 'utf-8'))
   assert.ok(st.fired.includes('003816:stop_loss'))
+}))
+
+test('tick: 双源一致才用共识价触发,并记录 quote quality', () => withDir([pos({})], async (dir) => {
+  const sent: string[] = []
+  const checks: Array<Record<string, unknown>> = []
+  const wd = new WatchdogManager({
+    dataDir: dir, fetchPrices: async () => new Map([['003816', 3.65]]),
+    verifyPrices: async () => new Map([['003816', 3.651]]),
+    recordQuoteCheck: value => { checks.push(value) },
+    deliverToUser: async text => { sent.push(text) }, now: () => MON_10_UTC,
+  })
+  await wd.tick()
+  assert.equal(sent.length, 1)
+  assert.equal(wd.getHealthSnapshot().quote_verification, 'consistent')
+  assert.equal(wd.getHealthSnapshot().verified_quote_count, 1)
+  assert.equal(checks.length, 1)
+}))
+
+test('tick: 双源冲突时 fail closed,不以可疑主源触发告警', () => withDir([pos({})], async (dir) => {
+  const sent: string[] = []
+  const wd = new WatchdogManager({
+    dataDir: dir, fetchPrices: async () => new Map([['003816', 3.65]]),
+    verifyPrices: async () => new Map([['003816', 4.20]]),
+    deliverToUser: async text => { sent.push(text) }, now: () => MON_10_UTC,
+  })
+  await wd.tick()
+  assert.equal(sent.length, 0)
+  assert.equal(wd.getHealthSnapshot().status, 'degraded')
+  assert.equal(wd.getHealthSnapshot().quote_verification, 'divergent')
+  assert.deepEqual(wd.getHealthSnapshot().missing_codes, ['003816'])
+}))
+
+test('tick: detailed sources use exchange timestamps and reject stale quotes', () => withDir([pos({})], async (dir) => {
+  const wd = new WatchdogManager({ dataDir: dir,
+    fetchPrices: async () => new Map(), verifyPrices: async () => new Map(),
+    fetchQuotePoints: async () => new Map([['003816', { price: 3.65, asOf: '2026-01-05T01:59:00Z' }]]),
+    verifyQuotePoints: async () => new Map([['003816', { price: 3.65, asOf: '2026-01-05T01:59:00Z' }]]),
+    deliverToUser: async () => {}, now: () => MON_10_UTC })
+  await wd.tick()
+  assert.equal(wd.getHealthSnapshot().quote_verification, 'unavailable')
+  assert.equal(wd.getHealthSnapshot().quote_count, 0)
 }))
 
 test('tick: 冷却 —— 同触发同日再 tick 不重复告警', () => withDir([pos({})], async (dir) => {
@@ -302,6 +344,8 @@ test('tick: 完整报价 → 健康快照包含价格与成功时间', () => wit
     cadence_reason: null,
     effective_interval_seconds: null,
     overlap_suppressed: 0,
+    quote_verification: 'not_configured',
+    verified_quote_count: 0,
   })
   assert.doesNotThrow(() => JSON.stringify(health))
 }))

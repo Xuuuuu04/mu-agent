@@ -188,6 +188,7 @@ test('loadConfig: watchdog cadence 与 near_pct 越界时 fail-fast', () => {
     ['interval_seconds', 0, /interval_seconds 必须在/],
     ['auction_interval_seconds', 5, /auction_interval_seconds 必须在/],
     ['close_auction_interval_seconds', 500, /close_auction_interval_seconds 必须在/],
+    ['event_interval_seconds', 60, /event_interval_seconds 必须在/],
     ['near_pct', 0, /near_pct 必须在/],
   ] as const) {
     const yaml = minimalYaml + `

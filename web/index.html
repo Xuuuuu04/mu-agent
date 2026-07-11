@@ -157,6 +157,16 @@ tbody tr:last-child td { border-bottom: 0; }
       </section>
 
       <section class="card">
+        <div class="card-head"><div class="card-title">研究质量</div><div class="card-meta">可复核证据</div></div>
+        <div class="health-grid">
+          <div class="health-item"><span>行情交叉验证</span><strong id="quote-quality">等待证据</strong></div>
+          <div class="health-item"><span>公告事件监控</span><strong id="event-monitor">等待证据</strong></div>
+          <div class="health-item"><span>交易日验收</span><strong id="session-audit">尚未完成</strong></div>
+        </div>
+        <div id="research-evidence" class="card-meta"></div>
+      </section>
+
+      <section class="card">
         <div class="card-head"><div class="card-title">告警与决策</div><div class="card-meta">最近记录</div></div>
         <div id="events"><div class="empty">暂无告警或决策记录</div></div>
       </section>
@@ -176,7 +186,7 @@ const tone = v => Number(v) > 0 ? 'positive' : Number(v) < 0 ? 'negative' : '';
 function renderStatus(finance, status) {
   const router = status && status.router_health;
   const calendar = status && status.scheduler_calendar_health;
-  const wd = finance && finance.watchdog;
+  const wd = status && status.watchdog || finance && finance.watchdog;
   const pills = [
     `<span class="pill ${status ? 'ok' : 'bad'}">${status ? '服务在线' : '服务不可达'}</span>`,
     `<span class="pill ${!router || router.last_selected_role === 'fallback' ? 'warn' : 'ok'}">${!router ? '模型状态未知' : router.last_selected_role === 'fallback' ? 'Fallback 生效' : '主模型路由'}</span>`,
@@ -192,7 +202,29 @@ function renderStatus(finance, status) {
   if (router && router.last_selected_role === 'fallback') problems.push(`当前最后成功路由是 fallback：${router.last_error || '主模型不可用'}`);
   if (wd && wd.status === 'degraded') problems.push(wd.last_error || 'watchdog 处于 degraded');
   if (calendar && calendar.status === 'degraded') problems.push(`交易日历降级：${calendar.last_error || '日历不可用、损坏或过期'}`);
+  const reminderConflicts = status && status.scheduler_queue && status.scheduler_queue.reminder_conflicts;
+  if (Number(reminderConflicts) > 0) problems.push(`${reminderConflicts} 条存量提醒存在日期、星期或时间冲突，请审计后重建`);
   document.getElementById('health-warning').innerHTML = problems.length ? `<div class="warning">${problems.map(esc).join('<br>')}</div>` : '';
+}
+
+function renderResearch(finance, status) {
+  const intel = finance && finance.research_intelligence || {};
+  const runtimeIntel = status && status.research_intelligence;
+  const quote = Array.isArray(intel.quote_checks) ? intel.quote_checks.at(-1) : null;
+  const audit = Array.isArray(intel.session_audits) ? intel.session_audits.at(-1) : null;
+  const monitor = status && status.market_event_monitor;
+  document.getElementById('quote-quality').textContent = quote ? `${quote.status || 'unknown'} · ${quote.code || '--'}` : '等待盘中双源报价';
+  document.getElementById('event-monitor').textContent = runtimeIntel && runtimeIntel.status === 'degraded' ? 'degraded · 状态损坏'
+    : monitor ? `${monitor.status} · ${monitor.event_count || 0} 条` : '等待监控启动';
+  document.getElementById('session-audit').textContent = audit ? `${audit.date || '--'} · ${audit.status === 'passed' ? '通过' : audit.status === 'failed' ? '失败' : '留证中'}` : '等待真实交易日';
+  const valuation = Array.isArray(intel.valuations) ? intel.valuations.at(-1) : null;
+  const attribution = Array.isArray(intel.attributions) ? intel.attributions.at(-1) : null;
+  const outcome = Array.isArray(intel.outcomes) ? intel.outcomes.at(-1) : null;
+  const evidence = [valuation && `估值 ${valuation.code || ''} ${shortTime(valuation.asOf)}`,
+    attribution && `组合归因 ${shortTime(attribution.asOf)}`, outcome && `决策复盘 ${outcome.decisionId || ''}`].filter(Boolean);
+  const auditReason = audit && audit.status === 'failed' ? `验收失败: 缺边界 ${(audit.missingBoundaries || []).join(',') || '无'} / 覆盖 ${pct(audit.quoteCoverage)} / 漂移 ${num(audit.maxDriftSeconds,0)}秒 / 重叠 ${audit.overlapSuppressed || 0}` : '';
+  const stateError = intel.status === 'degraded' ? `研究状态降级: ${intel.error || '状态不可读'}` : '';
+  document.getElementById('research-evidence').textContent = [stateError, auditReason, ...evidence].filter(Boolean).join(' · ') || '估值、归因和建议效果将在形成证据后显示';
 }
 
 function renderRisk(finance) {
@@ -251,7 +283,7 @@ function renderBacktest(finance) {
 
 async function refresh() {
   const [status, finance] = await Promise.all([get('/api/status'), get('/api/finance')]);
-  safeRender(renderStatus, finance, status); safeRender(renderRisk, finance, status); safeRender(renderCases, finance, status); safeRender(renderEvents, finance, status); safeRender(renderBacktest, finance, status);
+  safeRender(renderStatus, finance, status); safeRender(renderResearch, finance, status); safeRender(renderRisk, finance, status); safeRender(renderCases, finance, status); safeRender(renderEvents, finance, status); safeRender(renderBacktest, finance, status);
   document.getElementById('refreshed').textContent = `${status || finance ? '最后刷新' : '刷新失败'} ${new Date().toLocaleTimeString('zh-CN', {hour12:false})}`;
 }
 function safeRender(render, finance, status) {

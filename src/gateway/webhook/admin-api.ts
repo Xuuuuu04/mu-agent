@@ -125,7 +125,34 @@ export class AdminApi {
       portfolio_risk: this.objectView(this.readJsonFile('memory/portfolio-risk-latest.json')),
       backtest: this.objectView(this.readJsonFile('backtest/latest-report.json')),
       simulation_analysis: this.objectView(this.readJsonFile('backtest/latest-simulation-analysis.json')),
+      research_intelligence: this.readIntelligenceView(),
     })
+  }
+
+  private readIntelligenceView(): Record<string, unknown> {
+    const empty = (status: 'empty' | 'degraded', error: string | null = null) => ({ status, error,
+      quote_checks: [], events: [], valuations: [], attributions: [], outcomes: [], session_audits: [] })
+    if (!this.opts.dataDir) return empty('empty')
+    const path = join(this.opts.dataDir, 'memory', 'research-intelligence.json')
+    if (!existsSync(path)) return empty('empty')
+    let value: unknown
+    try { value = JSON.parse(readFileSync(path, 'utf8')) } catch { return empty('degraded', 'research intelligence state is unreadable') }
+    const state = this.objectView(value)
+    if (!state || state.version !== 1) return empty('degraded', 'research intelligence schema is invalid')
+    if (!['quoteChecks', 'events', 'valuations', 'attributions', 'outcomes', 'sessionAudits'].every(key => Array.isArray(state[key]))) {
+      return empty('degraded', 'research intelligence schema is invalid')
+    }
+    const bounded = (key: string, limit: number) => this.arrayField(state[key], key)
+      .filter(item => item !== null && typeof item === 'object' && !Array.isArray(item)).slice(-limit)
+    return {
+      status: 'healthy', error: null,
+      quote_checks: bounded('quoteChecks', 20),
+      events: bounded('events', 50),
+      valuations: bounded('valuations', 20),
+      attributions: bounded('attributions', 20),
+      outcomes: bounded('outcomes', 50),
+      session_audits: bounded('sessionAudits', 20),
+    }
   }
 
   private readRecentAlertLines(limit: number): string[] {

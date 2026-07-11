@@ -11,11 +11,14 @@ import type { Position } from './types.js'
 import { atomicWriteJsonSync } from './atomic-file.js'
 import { beijingDateStr, beijingMinutes, nextMarketMonitoringAt, type MarketPhase } from './market-hours.js'
 import { MarketClock } from './market-clock.js'
+import { reconcileQuotes } from '../finance/research-intelligence.js'
 
 // 只在这些时段查价(价格在动的真实交易窗口)。
 const ACTIVE_PHASES = new Set(['call_auction', 'morning', 'afternoon', 'call_close'])
 
 export type PriceFetcher = (codes: string[]) => Promise<Map<string, number>>
+export interface PriceQuotePoint { price: number; asOf: string }
+export type DetailedPriceFetcher = (codes: string[]) => Promise<Map<string, PriceQuotePoint>>
 export type Deliver = (text: string) => Promise<void>
 
 export interface Trigger {
@@ -26,6 +29,11 @@ export interface Trigger {
 export interface WatchdogDeps {
   dataDir: string
   fetchPrices: PriceFetcher
+  verifyPrices?: PriceFetcher
+  fetchQuotePoints?: DetailedPriceFetcher
+  verifyQuotePoints?: DetailedPriceFetcher
+  recordQuoteCheck?: (value: Record<string, unknown>) => void
+  recordSessionTick?: (now: Date, quoteCoverage: number, overlapSuppressed: number) => void
   deliverToUser: Deliver
   calendarPath?: string
   intervalSec?: number      // 默认 180
@@ -57,6 +65,8 @@ export interface WatchdogHealthSnapshot {
   cadence_reason: string | null
   effective_interval_seconds: number | null
   overlap_suppressed: number
+  quote_verification: 'not_configured' | 'consistent' | 'degraded' | 'divergent' | 'unavailable'
+  verified_quote_count: number
 }
 
 interface WatchdogState {
@@ -132,6 +142,11 @@ export class WatchdogManager {
     } finally {
       this.inFlight = false
       this.updateHealth({ in_flight: false })
+      const now = this.deps.now ? this.deps.now() : new Date()
+      const coverage = this.health.active_position_count > 0 ? this.health.quote_count / this.health.active_position_count : 1
+      try { this.deps.recordSessionTick?.(now, coverage, this.health.overlap_suppressed) } catch (error) {
+        console.error(`[watchdog] 交易时段验收留证失败: ${(error as Error).message}`)
+      }
     }
   }
 
@@ -218,9 +233,27 @@ export class WatchdogManager {
       return
     }
 
-    let prices: Map<string, number>
+    let primaryPrices: Map<string, number>
+    let verifierPrices: Map<string, number> | null = null
+    let primaryPoints: Map<string, PriceQuotePoint> | null = null
+    let verifierPoints: Map<string, PriceQuotePoint> | null = null
     try {
-      prices = await this.deps.fetchPrices(positions.map(p => p.code))
+      const codes = positions.map(p => p.code)
+      if (this.deps.fetchQuotePoints && this.deps.verifyQuotePoints) {
+        const [primary, verifier] = await Promise.allSettled([this.deps.fetchQuotePoints(codes), this.deps.verifyQuotePoints(codes)])
+        if (primary.status === 'rejected') throw primary.reason
+        primaryPrices = new Map([...primary.value].map(([code, quote]) => [code, quote.price]))
+        verifierPrices = verifier.status === 'fulfilled' ? new Map([...verifier.value].map(([code, quote]) => [code, quote.price])) : new Map()
+        primaryPoints = primary.value
+        verifierPoints = verifier.status === 'fulfilled' ? verifier.value : new Map()
+      } else if (this.deps.verifyPrices) {
+        const [primary, verifier] = await Promise.allSettled([this.deps.fetchPrices(codes), this.deps.verifyPrices(codes)])
+        if (primary.status === 'rejected') throw primary.reason
+        primaryPrices = primary.value
+        verifierPrices = verifier.status === 'fulfilled' ? verifier.value : new Map()
+      } else {
+        primaryPrices = await this.deps.fetchPrices(codes)
+      }
     } catch (err) {
       const message = `quote fetch failed: ${(err as Error).message}`
       console.error(`[watchdog] 取价失败,本轮降级: ${(err as Error).message}`)
@@ -236,12 +269,36 @@ export class WatchdogManager {
       return
     }
 
+    const prices = new Map<string, number>()
     const currentPrices: Record<string, number> = {}
     const missingCodes: string[] = []
+    const qualityChecks: Array<Record<string, unknown>> = []
+    let verifiedQuoteCount = 0
     for (const code of uniqueSorted(positions.map(p => p.code))) {
-      const price = prices.get(code)
+      let price = primaryPrices.get(code)
+      if (this.deps.verifyPrices || (this.deps.fetchQuotePoints && this.deps.verifyQuotePoints)) {
+        const observations = [
+          { source: 'primary', price: primaryPrices.get(code) ?? Number.NaN, asOf: primaryPoints?.get(code)?.asOf ?? nowIso },
+          { source: 'tencent', price: verifierPrices?.get(code) ?? Number.NaN, asOf: verifierPoints?.get(code)?.asOf ?? nowIso },
+        ]
+        const quality = reconcileQuotes(observations, now, { maxAgeSeconds: 15, toleranceBps: 20, minSources: 2 })
+        qualityChecks.push({ code, checkedAt: nowIso, timestampBasis: primaryPoints ? 'source_time' : 'receipt_time', observations, ...quality })
+        if (quality.status === 'consistent' && quality.consensusPrice !== null) {
+          price = quality.consensusPrice
+          verifiedQuoteCount++
+        } else price = undefined
+      }
       if (price == null || !Number.isFinite(price) || price <= 0) missingCodes.push(code)
-      else currentPrices[code] = price
+      else { currentPrices[code] = price; prices.set(code, price) }
+    }
+    const quoteVerification: WatchdogHealthSnapshot['quote_verification'] = !(this.deps.verifyPrices || this.deps.verifyQuotePoints) ? 'not_configured'
+      : qualityChecks.every(x => x.status === 'consistent') ? 'consistent'
+      : qualityChecks.some(x => x.status === 'divergent') ? 'divergent'
+      : qualityChecks.some(x => x.status === 'unavailable') ? 'unavailable' : 'degraded'
+    for (const quality of qualityChecks) {
+      try { this.deps.recordQuoteCheck?.(quality) } catch (error) {
+        console.error(`[watchdog] 行情质量留证失败: ${(error as Error).message}`)
+      }
     }
     const quoteCount = Object.keys(currentPrices).length
     const quoteError = missingCodes.length > 0
@@ -261,6 +318,8 @@ export class WatchdogManager {
       last_error: currentError,
       last_error_at: currentError ? nowIso : null,
       skipped_reason: null,
+      quote_verification: quoteVerification,
+      verified_quote_count: verifiedQuoteCount,
     })
     if (quoteError) console.error(`[watchdog] ${quoteError}`)
 
@@ -377,26 +436,34 @@ export function alertText(p: Position, price: number, trig: Trigger, now: Date):
 // 解析 hexin-ifind-stock__stock_highfreq_quotes 的返回(嵌套 JSON:outer.data 是字符串)。
 // tables[0]=表头(证券代码/证券简称/time/最新价/...),其后每行一只票。
 export function parseIfindPrices(toolOutput: string): Map<string, number> {
-  const map = new Map<string, number>()
+  return new Map([...parseIfindQuotePoints(toolOutput)].map(([code, quote]) => [code, quote.price]))
+}
+
+export function parseIfindQuotePoints(toolOutput: string): Map<string, PriceQuotePoint> {
   try {
     const outer = JSON.parse(toolOutput)
     const dataRaw = typeof outer === 'object' && outer !== null ? outer.data ?? outer : outer
     const inner = typeof dataRaw === 'string' ? JSON.parse(dataRaw) : dataRaw
     const tables = inner?.tables
-    if (!Array.isArray(tables) || tables.length < 2) return map
+    if (!Array.isArray(tables) || tables.length < 2) return new Map()
     const header = tables[0] as string[]
     const codeIdx = header.indexOf('证券代码')
     const priceIdx = header.indexOf('最新价')
-    if (codeIdx < 0 || priceIdx < 0) return map
+    const timeIdx = header.indexOf('time')
+    if (codeIdx < 0 || priceIdx < 0 || timeIdx < 0) return new Map()
+    const points = new Map<string, PriceQuotePoint>()
     for (let i = 1; i < tables.length; i++) {
       const row = tables[i] as unknown[]
       const fullCode = String(row[codeIdx])            // '003816.SZ'
       const code = fullCode.split('.')[0]              // '003816'
       const price = Number(row[priceIdx])
-      if (code && Number.isFinite(price) && price > 0) map.set(code, price)
+      const timeText = String(row[timeIdx] ?? '').trim().replace(' ', 'T')
+      const time = new Date(`${timeText}+08:00`)
+      if (code && Number.isFinite(price) && price > 0 && Number.isFinite(time.getTime())) points.set(code, { price, asOf: time.toISOString() })
     }
+    return points
   } catch { /* 解析失败返空 map,watchdog 本轮跳过该票 */ }
-  return map
+  return new Map()
 }
 
 // ── 内部小工具(北京日期/分钟,避免循环依赖 market-hours 的导出函数都 OK,这里直接复用)──
@@ -433,6 +500,8 @@ function emptyHealth(): WatchdogHealthSnapshot {
     cadence_reason: null,
     effective_interval_seconds: null,
     overlap_suppressed: 0,
+    quote_verification: 'not_configured',
+    verified_quote_count: 0,
   }
 }
 

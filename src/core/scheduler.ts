@@ -5,6 +5,7 @@ import type { MemoryStore } from '../memory/store.js'
 import { atomicWriteJsonSync } from './atomic-file.js'
 import { beijingHour, type MarketPhase } from './market-hours.js'
 import { MarketClock, type MarketClockHealth } from './market-clock.js'
+import { auditReminderText, validateReminderSemantics, type ReminderSemantics } from './reminder-semantics.js'
 
 export type WakeKind = 'reminder' | 'task' | 'rest'
 
@@ -15,6 +16,7 @@ export interface ScheduledWake {
   activity_type: string
   kind: WakeKind
   interruptible: boolean
+  semantics?: ReminderSemantics
 }
 
 export type SchedulerCalendarHealthSnapshot = MarketClockHealth
@@ -61,13 +63,21 @@ export class Scheduler {
     this.recoveryNeededProbe = fn
   }
 
-  scheduleNext(suggested: { seconds: number; reason: string; activity_type: string }): string {
+  scheduleNext(suggested: { seconds: number; reason: string; activity_type: string; semantics?: ReminderSemantics }): string {
     const kind = wakeKind(suggested.activity_type)
     // reminder 是用户时钟语义，绝不能套旧“睡多久”的 clamp；task/rest 才走活跃度规则。
     const seconds = kind === 'reminder'
       ? Math.max(1, suggested.seconds)
       : this.clamp(suggested.seconds)
     const at = new Date(Date.now() + seconds * 1000).toISOString()
+    if (kind === 'reminder' && suggested.semantics) {
+      const calendar = this.marketClock.context().calendar
+      const validation = validateReminderSemantics(suggested.semantics, calendar)
+      if (!validation.valid) throw new Error(`提醒时间语义冲突:${validation.issues.map(x => x.message).join(';')}`)
+      if (Math.abs(Date.parse(suggested.semantics.targetAt) - Date.parse(at)) > 1500) {
+        throw new Error('提醒 target_at 与 seconds 计算结果不一致')
+      }
+    }
     const existing = kind === 'task'
       ? this.wakes.find(w => w.kind === 'task' && w.reason === suggested.reason)
       : undefined
@@ -78,10 +88,12 @@ export class Scheduler {
       activity_type: suggested.activity_type,
       kind,
       interruptible: kind === 'rest',
+      ...(suggested.semantics ? { semantics: suggested.semantics } : {}),
     }
     wake.at = at
     wake.reason = suggested.reason
     wake.activity_type = suggested.activity_type
+    wake.semantics = suggested.semantics
 
     if (!existing) {
       // rest 是旧自决睡眠语义，同一时间只保留一个；提醒和不同 task 都允许并存。
@@ -253,14 +265,25 @@ export class Scheduler {
     }
   }
 
-  getQueueSummary(): { total: number; reminder: number; task: number; rest: number; last_recovery_reason: string | null } {
+  getQueueSummary(): { total: number; reminder: number; task: number; rest: number; reminder_conflicts: number; last_recovery_reason: string | null } {
     return {
       total: this.wakes.length,
       reminder: this.wakes.filter(w => w.kind === 'reminder').length,
       task: this.wakes.filter(w => w.kind === 'task').length,
       rest: this.wakes.filter(w => w.kind === 'rest').length,
+      reminder_conflicts: this.auditReminders().filter(x => !x.valid).length,
       last_recovery_reason: this.lastRecoveryReason,
     }
+  }
+
+  auditReminders(): Array<{ id: string; at: string; reason: string; valid: boolean; issues: string[] }> {
+    const calendar = this.marketClock.context().calendar
+    return this.wakes.filter(w => w.kind === 'reminder').map(w => {
+      const result = w.semantics
+        ? validateReminderSemantics(w.semantics, calendar)
+        : auditReminderText(w.at, w.reason, calendar)
+      return { id: w.id, at: w.at, reason: w.reason, valid: result.valid, issues: result.issues.map(x => x.message) }
+    })
   }
 
   getCalendarHealthSnapshot(): SchedulerCalendarHealthSnapshot {
@@ -334,6 +357,7 @@ function isScheduledWake(value: unknown): value is ScheduledWake {
     && typeof w.activity_type === 'string'
     && (w.kind === 'reminder' || w.kind === 'task' || w.kind === 'rest')
     && typeof w.interruptible === 'boolean'
+    && (w.semantics === undefined || (typeof w.semantics === 'object' && w.semantics !== null))
 }
 
 export interface ClampWakeConfig {

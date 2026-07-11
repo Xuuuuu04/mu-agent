@@ -36,6 +36,7 @@ test('/api/finance: missing files return a stable empty contract', async () => {
     assert.deepEqual(r.body, {
       positions: [], investment_cases: [], decisions: [], alerts: [],
       watchdog: null, portfolio_risk: null, backtest: null, simulation_analysis: null,
+      research_intelligence: { status: 'empty', error: null, quote_checks: [], events: [], valuations: [], attributions: [], outcomes: [], session_audits: [] },
     })
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -59,6 +60,10 @@ test('/api/finance: aggregates active records and bounds journal/alerts', async 
     }))
     writeFileSync(join(mem, 'watchdog-health.json'), JSON.stringify({ status: 'healthy' }))
     writeFileSync(join(mem, 'portfolio-risk-latest.json'), JSON.stringify({ total_market_value: 1000 }))
+    writeFileSync(join(mem, 'research-intelligence.json'), JSON.stringify({ version: 1,
+      quoteChecks: Array.from({ length: 25 }, (_, i) => ({ i })), events: [{ id: 'e1' }],
+      valuations: [{ code: '600519' }], attributions: [], outcomes: [], sessionAudits: [{ pass: true }],
+    }))
     writeFileSync(join(mem, 'alerts.log'), Array.from({ length: 30 }, (_, i) => `alert-${i}`).join('\n') + '\n')
     writeFileSync(join(dir, 'backtest', 'latest-report.json'), JSON.stringify({ strategy: 'ma_cross' }))
     writeFileSync(join(dir, 'backtest', 'latest-simulation-analysis.json'), JSON.stringify({ account: 'paper' }))
@@ -73,9 +78,37 @@ test('/api/finance: aggregates active records and bounds journal/alerts', async 
     assert.equal((x.alerts as string[])[0], 'alert-10')
     assert.equal((x.watchdog as { status: string }).status, 'healthy')
     assert.equal((x.backtest as { strategy: string }).strategy, 'ma_cross')
+    const intel = x.research_intelligence as { quote_checks: Array<{ i: number }>; events: unknown[] }
+    assert.equal(intel.quote_checks.length, 20)
+    assert.equal(intel.quote_checks[0]!.i, 5)
+    assert.deepEqual(intel.events, [{ id: 'e1' }])
+    assert.equal((x.research_intelligence as { status: string }).status, 'healthy')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('/api/finance: corrupt research intelligence is explicit degraded, not fake empty', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shion-finance-corrupt-intel-'))
+  mkdirSync(join(dir, 'memory'), { recursive: true })
+  try {
+    writeFileSync(join(dir, 'memory', 'research-intelligence.json'), '{broken')
+    const r = await requestFinance(dir)
+    const intel = (r.body as { research_intelligence: { status: string; error: string } }).research_intelligence
+    assert.equal(intel.status, 'degraded')
+    assert.match(intel.error, /unreadable/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('/api/finance: parseable intelligence with invalid array fields is degraded', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shion-finance-schema-intel-'))
+  mkdirSync(join(dir, 'memory'), { recursive: true })
+  try {
+    writeFileSync(join(dir, 'memory', 'research-intelligence.json'), JSON.stringify({ version: 1,
+      quoteChecks: 'bad', events: [], valuations: [], attributions: [], outcomes: [], sessionAudits: [] }))
+    const r = await requestFinance(dir)
+    assert.equal(((r.body as Record<string, unknown>).research_intelligence as { status: string }).status, 'degraded')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('/api/finance: parseable invalid case, decisions and risk degrade independently', async () => {

@@ -1,6 +1,6 @@
 import { VERSION } from './version.js'
 import { resolve } from 'node:path'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { loadConfig } from './config.js'
 import { AgentLoop } from './core/agent-loop.js'
 import { ContextAssembler } from './core/context-assembler.js'
@@ -8,7 +8,11 @@ import { Scheduler } from './core/scheduler.js'
 import { MarketClock } from './core/market-clock.js'
 import { ModelRouter } from './providers/router.js'
 import { ProactiveManager } from './core/proactive.js'
-import { WatchdogManager, parseIfindPrices } from './core/watchdog.js'
+import { WatchdogManager, parseIfindPrices, parseIfindQuotePoints } from './core/watchdog.js'
+import { fetchTencentPrices, fetchTencentQuotePoints } from './core/tencent-quotes.js'
+import { MarketEventMonitor, parseIfindNoticeEvents } from './core/market-event-monitor.js'
+import { MarketSessionAuditor } from './core/market-session-auditor.js'
+import { beijingDateStr, beijingMinutes, isTradingDay } from './core/market-hours.js'
 import { log } from './core/logger.js'
 import { ToolRegistry } from './tools/registry.js'
 import { MemoryStore } from './memory/store.js'
@@ -36,8 +40,11 @@ import { downloadImageTool } from './tools/builtin/download-image.js'
 import {
   investmentCaseListTool, investmentCaseUpsertTool, investmentEvidenceAppendTool,
   investmentDecisionListTool, investmentDecisionRecordTool, portfolioRiskAnalyzeTool,
-  aStockBacktestTool, mxAnalyzeTool,
+  aStockBacktestTool, mxAnalyzeTool, aStockQuoteReconcileTool, aStockEventIngestTool,
+  aStockValuationRecordTool, portfolioAttributionRecordTool, investmentOutcomeRecordTool,
+  marketSessionAuditRecordTool, researchIntelligenceStatusTool,
 } from './tools/builtin/finance/index.js'
+import { ResearchIntelligenceStore } from './finance/research-intelligence.js'
 import {
   taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool,
 } from './tools/builtin/task.js'
@@ -82,7 +89,9 @@ async function main() {
     portfolioAddTool, portfolioUpdateTool, portfolioRemoveTool,
     investmentCaseListTool, investmentCaseUpsertTool, investmentEvidenceAppendTool,
     investmentDecisionListTool, investmentDecisionRecordTool, portfolioRiskAnalyzeTool,
-    aStockBacktestTool, mxAnalyzeTool,
+    aStockBacktestTool, mxAnalyzeTool, aStockQuoteReconcileTool, aStockEventIngestTool,
+    aStockValuationRecordTool, portfolioAttributionRecordTool, investmentOutcomeRecordTool,
+    marketSessionAuditRecordTool, researchIntelligenceStatusTool,
     taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool,
     spawnSubagentTool, spawnParallelTool]) {
     tools.register(t, { reserved: true })
@@ -107,6 +116,8 @@ async function main() {
     ? resolve(PROJECT_ROOT, config.scheduler.a_stock.calendar_path)
     : resolve(config.paths.data, 'memory', 'trade-calendar.json')
   const marketClock = new MarketClock(calendarPath, !!config.scheduler.a_stock?.enabled)
+  const researchIntelligence = new ResearchIntelligenceStore(config.paths.data)
+  const marketSessionAuditor = new MarketSessionAuditor(researchIntelligence)
   const scheduler = new Scheduler(config, store, marketClock)
   // 整合可用便宜模型,没配就用主模型
   const consolidationRouter = config.model.auxiliary?.consolidation
@@ -141,6 +152,7 @@ async function main() {
   })
 
   let watchdog: WatchdogManager | null = null
+  let eventMonitor: MarketEventMonitor | null = null
   const webDir = resolve(PROJECT_ROOT, 'web')
   const webhook = new WebhookGateway({
     port: config.webhook?.port ?? 3210,
@@ -160,8 +172,11 @@ async function main() {
         router_health: router.getHealthSnapshot(),
         scheduler_calendar_health: scheduler.getCalendarHealthSnapshot(),
         scheduler_queue: scheduler.getQueueSummary(),
+        reminder_audit: scheduler.auditReminders(),
         market_phase: marketClock.context().phase,
         watchdog: watchdog?.getHealthSnapshot() ?? null,
+        market_event_monitor: eventMonitor?.getHealthSnapshot() ?? null,
+        research_intelligence: safeResearchSnapshot(researchIntelligence),
         next_wake_at: sched.sleeping && sched.nextWake ? sched.nextWake.toISOString() : null,
         next_wake_reason: sched.sleeping ? sched.reason : null,
       }
@@ -197,11 +212,26 @@ async function main() {
   // 主动消息投递渠道:微信优先(配置了 wechat.bridge_send_url 就走微信 bridge /send),否则 QQ bridge。
   const channelSendUrl = config.wechat?.bridge_send_url ?? config.qq?.bridge_send_url ?? 'http://127.0.0.1:3212/send'
   const delivery = createDelivery(channelSendUrl, webhook)
+  const aStock = config.scheduler.a_stock
+  const watchdogCfg = aStock?.watchdog
+
+  eventMonitor = new MarketEventMonitor({
+    store: researchIntelligence,
+    getPositionCodes: () => loadActivePositionCodes(config.paths.data).slice(0, 20),
+    deliverToUser: delivery.deliverToUser,
+    intervalMs: (watchdogCfg?.event_interval_seconds ?? 900) * 1000,
+    fetchEvents: async (codes, from, to) => {
+      const tool = tools.get('ifind-news__search_notice')
+      if (!tool) throw new Error('iFind notice source unavailable')
+      const result = await tool.execute({ query: `${codes.join('、')} 最新公告 重点风险与资本事项`, size: 20,
+        time_start: from, time_end: to }, { config, dataDir: config.paths.data, log: () => {} } as never)
+      if (!result.success) throw new Error(result.error ?? 'iFind notice tool failed')
+      return parseIfindNoticeEvents(result.output)
+    },
+  })
 
   // A 股盯盘 watchdog:盘中定时查持仓现价,触止损/止盈主动告警(确定性,不烧 LLM)。
   // 取价走 iFind stock_highfreq_quotes(structured real_time);未接 iFind 则取不到价、静默跳过。
-  const aStock = config.scheduler.a_stock
-  const watchdogCfg = aStock?.watchdog
   watchdog = new WatchdogManager({
     enabled: !!watchdogCfg?.enabled,
     dataDir: config.paths.data,
@@ -213,13 +243,36 @@ async function main() {
     nearPct: watchdogCfg?.near_pct,
     marketClock,
     fetchPrices: async (codes) => {
-      const tool = tools.get('hexin-ifind-stock__stock_highfreq_quotes')
+      const tool = tools.get('ifind-stock__stock_highfreq_quotes') ?? tools.get('hexin-ifind-stock__stock_highfreq_quotes')
       if (!tool) return new Map()
       const r = await tool.execute(
         { symbols: codes.join(','), data_mode: 'real_time', indicators: '最新价' },
         { config, dataDir: config.paths.data, log: () => {} } as never,
       )
       return parseIfindPrices(r.output)
+    },
+    fetchQuotePoints: async (codes) => {
+      const tool = tools.get('ifind-stock__stock_highfreq_quotes') ?? tools.get('hexin-ifind-stock__stock_highfreq_quotes')
+      if (!tool) return new Map()
+      const result = await tool.execute(
+        { symbols: codes.join(','), data_mode: 'real_time', indicators: '最新价' },
+        { config, dataDir: config.paths.data, log: () => {} } as never,
+      )
+      if (!result.success) throw new Error(result.error ?? 'iFind quote tool failed')
+      return parseIfindQuotePoints(result.output)
+    },
+    verifyPrices: fetchTencentPrices,
+    verifyQuotePoints: fetchTencentQuotePoints,
+    recordQuoteCheck: value => researchIntelligence.saveQuoteCheck(value),
+    recordSessionTick: (now, coverage, overlap) => {
+      const context = marketClock.context(now)
+      const minutes = beijingMinutes(now)
+      const active = ['call_auction', 'morning', 'afternoon', 'call_close'].includes(context.phase)
+      const halfDay = !!context.calendar?.half_days.includes(beijingDateStr(now))
+      const afterClose = halfDay ? minutes >= 11 * 60 + 30 : context.phase === 'post_market'
+      if (isTradingDay(now, context.calendar) && (active || minutes === 11 * 60 + 30 || afterClose)) {
+        marketSessionAuditor.record(now, coverage, overlap, halfDay)
+      }
     },
   })
 
@@ -257,6 +310,7 @@ async function main() {
 
   // A 股 watchdog(开关在 config.scheduler.a_stock.watchdog.enabled)。盘中触发线告警走 delivery(微信)。
   if (watchdogCfg?.enabled) watchdog.start()
+  if (watchdogCfg?.enabled) eventMonitor.start()
 
   loop.restoreSession()     // 重启前落盘的会话接回来,部署不再丢她的短期记忆
   scheduler.startCronFallback()
@@ -275,6 +329,7 @@ async function main() {
     clearInterval(outboxDrainTimer)
     hotReloader.stop()
     watchdog?.stop()
+    eventMonitor?.stop()
     scheduler.stop()
     proactive.stop()
     mcpManager.stopAll()
@@ -283,6 +338,33 @@ async function main() {
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
+}
+
+function loadActivePositionCodes(dataDir: string): string[] {
+  const path = resolve(dataDir, 'memory', 'portfolio.json')
+  if (!existsSync(path)) return []
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8')) as unknown
+    if (!Array.isArray(value)) return []
+    return value.filter(item => item && typeof item === 'object' && (item as { status?: string }).status === 'active')
+      .map(item => String((item as { code?: unknown }).code ?? '')).filter(code => /^\d{6}$/.test(code))
+  } catch { return [] }
+}
+
+function safeResearchSnapshot(store: ResearchIntelligenceStore): Record<string, unknown> | null {
+  try {
+    const state = store.snapshot()
+    return {
+      quote_quality: state.quoteChecks.at(-1) ?? null,
+      event_alerts: state.events.filter(event => event.requiresAlert).slice(0, 10),
+      latest_valuation: state.valuations.at(-1) ?? null,
+      latest_attribution: state.attributions.at(-1) ?? null,
+      latest_outcome: state.outcomes.at(-1) ?? null,
+      latest_session_audit: state.sessionAudits.at(-1) ?? null,
+    }
+  } catch (error) {
+    return { status: 'degraded', error: (error as Error).message }
+  }
 }
 
 main().catch((err) => {

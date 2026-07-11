@@ -129,17 +129,21 @@ OpenAI provider 负责 schema 降级和 tool-call 格式转换；Anthropic provi
 ```text
 市场/基本面/公告/研报 MCP
   → Investment Case + append-only evidence
-  → watchdog 行情健康快照
+  → iFind 主行情 + 腾讯验证源 quorum（冲突 fail-closed）
+  → watchdog 行情健康快照 + 交易时段 audit trail
+  → 持仓公告确定性 monitor（规范化/去重/重大事件触达）
   → portfolio risk snapshot
-  → decision journal
+  → 情景估值 + 组合归因 + decision outcome ledger
   → Web dashboard / 后续复盘
 ```
 
-研究状态使用版本化 JSON envelope 并原子替换。损坏文件 fail-closed，避免在读失败后用空状态覆盖真实历史。行情 watchdog 同时保留 cooldown 状态和独立健康快照；组合风险只接受足够新、数量有效且覆盖完整的价格。
+研究状态使用版本化 JSON envelope 并原子替换。损坏文件 fail-closed，避免在读失败后用空状态覆盖真实历史。行情 watchdog 同时保留 cooldown 状态和独立健康快照；生产阈值告警要求 iFind 与腾讯两个独立来源各自携带交易所时间、仍在 freshness 窗口且价格在 20bps 内形成 quorum，验证源缺失、陈旧或冲突只留降级证据、不触发可疑价格告警。公告 monitor 默认每 15 分钟检查持仓近 24 小时公告，不调用 LLM；重大事件必须先成功进入可靠投递链再标记 seen，投递失败会在下一轮重试。组合风险只接受足够新、数量有效且覆盖完整的价格。
+
+`research-intelligence.json` 统一保存 bounded 的行情质量、公告事件、估值、归因、决策结果和交易日验收记录。估值必须由调用方显式提供公司/行业特定且有序的熊、基、牛 PE 假设，并为价格、历史 EPS/BVPS 与前向 EPS 分别保存 source/asOf，逐字段标记 available/stale/missing。组合归因以独立观测的期末权益、净现金流、费用和滑点对持仓贡献做 reconciliation，非零残差会标 degraded。决策结果把 decision/due/observed 三个带时区时间与 `decisionId+horizon` 唯一键一起锁定，再记录基准收益、MFE/MAE，防止提前评价、重复记账和事后挑选成功样本。交易日审计在 09:15、09:30、11:30、13:00、14:57、15:00 自动累计实际触发漂移与全天报价覆盖均值；半日市只期望上午三个边界，重叠计数按交易日增量归零，收盘前为 collecting、到收盘才形成 passed/failed。未到真实交易日时只显示“等待证据”，不伪造通过结论。
 
 回测是独立 Python 包：收盘信号下一根开盘执行，模拟 T+1、一手、费用、滑点、停牌和分板块涨跌停。主板/创业科创/北交默认分别按 10%/20%/30%，ST 与上市初期状态由显式 override 或 bar 标志提供。数据缓存带复权元数据；模拟账户通过严格标准化契约导入，拒绝非有限数、非法时间和重复成交 ID。二者均无券商连接，输出只能作为研究证据，不能视为收益保证。
 
-`/api/finance` 聚合持仓、活跃 case、决策、预警、行情健康、组合风险及最新回测/模拟报告，各部分独立降级。工作台不写研究状态，因此可作为低权限可观测面。
+`/api/finance` 聚合持仓、活跃 case、决策、预警、行情健康、组合风险、研究质量证据及最新回测/模拟报告，各部分独立降级。工作台不写研究状态，因此可作为低权限可观测面。`/api/status` 另暴露 watchdog 的多源验证状态、公告 monitor、交易时段审计摘要和存量提醒语义冲突数。
 
 ## 10. 安全边界
 

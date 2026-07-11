@@ -54,6 +54,7 @@ scheduler:
   #     interval_seconds: 180               # 连续竞价每 3 分钟
   #     auction_interval_seconds: 60        # 开盘集合竞价每 1 分钟
   #     close_auction_interval_seconds: 30  # 收盘集合竞价每 30 秒
+  #     event_interval_seconds: 900         # 持仓公告每 15 分钟检查一次,不调用 LLM
   #     near_pct: 0.01                      # 距止损/止盈线 1% 预警
   # 成本估算:按 180/60/30 秒配置,完整交易日约 100 次批量报价请求(全部持仓合并为一批),0 次 LLM 调用;
   # 连续竞价用 300 秒时约 68 次。先看 /api/status 的 market_phase、watchdog.next_tick_at、

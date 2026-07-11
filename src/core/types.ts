@@ -27,6 +27,7 @@ export interface MuConfig {
         interval_seconds?: number      // 连续竞价 tick 间隔,默认 180
         auction_interval_seconds?: number // 开盘集合竞价,默认 60
         close_auction_interval_seconds?: number // 收盘集合竞价,默认 30
+        event_interval_seconds?: number // 持仓公告确定性检查,默认 900
         near_pct?: number              // 接近缓冲,默认 0.01(距线 ≤1% 预警)
       }
     }
@@ -179,7 +180,12 @@ export interface ToolContext {
   // 主动给用户发消息(message_send 用),路由到当前网关。imagePath 是本地图片,QQ 走富媒体
   sendMessage?: (text: string, imagePath?: string) => Promise<void>
   // 设置下次唤醒(schedule_wake 用)
-  scheduleWake?: (seconds: number, reason: string, activityType: string) => void
+  scheduleWake?: (
+    seconds: number,
+    reason: string,
+    activityType: string,
+    semantics?: { targetAt: string; expectedWeekday?: number; requireTradingDay?: boolean },
+  ) => void
   // 子代理递归深度:主 cycle execute 传 0;子代理 subCtx 传 +1。spawn_subagent 据此 depth 硬闸(>=1 拒)
   depth?: number
 }

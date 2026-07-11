@@ -205,8 +205,8 @@ export class AgentLoop {
             ? (text: string, imagePath?: string) => this.sendRouter!(replySource, text, imagePath)
             : undefined,
           scheduleWake: this.scheduler
-            ? (seconds, reason, activity) => {
-                this.scheduler!.scheduleNext({ seconds, reason, activity_type: activity })
+            ? (seconds, reason, activity, semantics) => {
+                this.scheduler!.scheduleNext({ seconds, reason, activity_type: activity, semantics })
                 this.assembler.setLastWake(new Date(), activity)
               }
             : undefined,
