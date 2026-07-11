@@ -48,7 +48,8 @@ fi
 pnpm typecheck
 SHION_REVISION="$REVISION" SHION_BUILD_TIME="$BUILD_TIME" pm2 restart mu --update-env
 pm2 save
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+# 生产需依次连接多个 MCP，冷启动通常 10-15 秒；给足 30 秒但仍以 revision 为唯一成功条件。
+for _ in $(seq 1 30); do
   body="$(curl -fsS http://127.0.0.1:3210/api/status 2>/dev/null || true)"
   if [[ "$body" == *"\"revision\":\"$REVISION\""* ]]; then
     printf '%s\n' "$body"

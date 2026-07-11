@@ -91,6 +91,7 @@ class DeployManifestTests(unittest.TestCase):
         self.assertIn('[[ -f data/memory/trade-calendar.json ]] ||', text)
         self.assertIn("import akshare, numpy, pandas", text)
         self.assertIn("find_backtest_python 0 0", text)
+        self.assertIn("for _ in $(seq 1 30)", text)
         self.assertNotIn("rsync -az --exclude", text)
 
 
