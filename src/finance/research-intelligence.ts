@@ -38,7 +38,7 @@ export function reconcileQuotes(observations: QuoteObservation[], now: Date, pol
   }
 }
 
-export interface RawMarketEvent { source: string; title: string; publishedAt: string; url?: string; content?: string }
+export interface RawMarketEvent { source: string; title: string; publishedAt: string; url?: string; content?: string; codeHints?: string[] }
 export interface MarketEvent extends RawMarketEvent {
   id: string
   severity: 'critical' | 'high' | 'normal'
@@ -55,12 +55,19 @@ export function mergeMarketEvents(existing: MarketEvent[], incoming: RawMarketEv
     if (!raw.source || !raw.title || !Number.isFinite(Date.parse(raw.publishedAt))) continue
     const canonical = `${raw.source}|${raw.url ?? ''}|${raw.title.trim()}|${raw.publishedAt}`
     const id = createHash('sha256').update(canonical).digest('hex').slice(0, 20)
-    if (map.has(id)) continue
-    const relatedCodes = positionCodes.filter(code => raw.title.includes(code) || raw.content?.includes(code)).sort()
+    const relatedCodes = positionCodes.filter(code => raw.codeHints?.includes(code) || raw.title.includes(code) || raw.content?.includes(code)).sort()
+    const prior = map.get(id)
+    if (prior) {
+      const mergedCodes = [...new Set([...prior.relatedCodes, ...relatedCodes])].sort()
+      map.set(id, { ...prior, relatedCodes: mergedCodes, requiresAlert: mergedCodes.length > 0 && prior.severity !== 'normal' })
+      continue
+    }
     const critical = /停牌|重大资产重组|退市|立案|处罚|风险警示|债务违约|控制权变更/.test(`${raw.title} ${raw.content ?? ''}`)
     const high = critical || /业绩预告|减持|增持|回购|解禁|分红|中标|诉讼/.test(`${raw.title} ${raw.content ?? ''}`)
     const severity = critical ? 'critical' : high ? 'high' : 'normal'
-    map.set(id, { ...raw, id, severity, relatedCodes, requiresAlert: relatedCodes.length > 0 && severity !== 'normal' })
+    const event: RawMarketEvent = { source: raw.source, title: raw.title, publishedAt: raw.publishedAt,
+      ...(raw.url === undefined ? {} : { url: raw.url }), ...(raw.content === undefined ? {} : { content: raw.content }) }
+    map.set(id, { ...event, id, severity, relatedCodes, requiresAlert: relatedCodes.length > 0 && severity !== 'normal' })
   }
   const rank = { critical: 2, high: 1, normal: 0 }
   return [...map.values()].sort((a, b) => rank[b.severity] - rank[a.severity]

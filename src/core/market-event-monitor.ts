@@ -46,8 +46,11 @@ export class MarketEventMonitor {
       let events = this.deps.store.snapshot().events
       let alertCount = 0
       for (const raw of fetched) {
-        const known = new Set(events.map(event => event.id))
-        const candidate = mergeMarketEvents(events, [raw], codes).find(event => !known.has(event.id))
+        const beforeById = new Map(events.map(event => [event.id, event]))
+        const candidate = mergeMarketEvents(events, [raw], codes).find(event => {
+          const before = beforeById.get(event.id)
+          return !before || (!before.requiresAlert && event.requiresAlert)
+        })
         if (!candidate) continue
         if (candidate.requiresAlert) {
           await this.deps.deliverToUser(eventAlertText(candidate))

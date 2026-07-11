@@ -52,6 +52,15 @@ test('mergeMarketEvents: 规范化、去重、严重度和持仓关联', () => {
   assert.equal(events[0]!.requiresAlert, true)
 })
 
+test('mergeMarketEvents uses query code hints and can repair a previously missed relation', () => {
+  const raw = { source: 'ifind-notice', title: '中微公司：股东减持公告', content: '未包含证券代码', publishedAt: '2026-07-11T00:00:00Z' }
+  const missed = mergeMarketEvents([], [raw], ['688012'])
+  assert.equal(missed[0]!.requiresAlert, false)
+  const repaired = mergeMarketEvents(missed, [{ ...raw, codeHints: ['688012'] }], ['688012'])
+  assert.deepEqual(repaired[0]!.relatedCodes, ['688012'])
+  assert.equal(repaired[0]!.requiresAlert, true)
+})
+
 test('calculateValuationSnapshot: 计算前向PE/PEG并保留情景假设和覆盖度', () => {
   const v = calculateValuationSnapshot({
     code: '600519', asOf: '2026-07-13T07:00:00Z', price: 1200,

@@ -223,10 +223,14 @@ async function main() {
     fetchEvents: async (codes, from, to) => {
       const tool = tools.get('ifind-news__search_notice')
       if (!tool) throw new Error('iFind notice source unavailable')
-      const result = await tool.execute({ query: `${codes.join('、')} 最新公告 重点风险与资本事项`, size: 20,
-        time_start: from, time_end: to }, { config, dataDir: config.paths.data, log: () => {} } as never)
-      if (!result.success) throw new Error(result.error ?? 'iFind notice tool failed')
-      return parseIfindNoticeEvents(result.output)
+      const events = []
+      for (const code of codes) {
+        const result = await tool.execute({ query: `${code} 最新公告 重点风险与资本事项`, size: 5,
+          time_start: from, time_end: to }, { config, dataDir: config.paths.data, log: () => {} } as never)
+        if (!result.success) throw new Error(result.error ?? 'iFind notice tool failed')
+        events.push(...parseIfindNoticeEvents(result.output).map(event => ({ ...event, codeHints: [code] })))
+      }
+      return events
     },
   })
 
