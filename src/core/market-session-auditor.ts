@@ -18,7 +18,9 @@ export class MarketSessionAuditor {
     for (const boundary of expected) {
       const [hour, minute] = boundary.split(':').map(Number)
       const driftSeconds = (local.hour * 3600 + local.minute * 60 + local.second) - (hour! * 3600 + minute! * 60)
-      if (Math.abs(driftSeconds) <= 90 && !observed.some(item => item.boundary === boundary)) observed.push({ boundary, driftSeconds })
+      // cadence tick 可以晚到后归属于刚过去的边界，但绝不能提前占用未来边界。
+      // 否则 09:29:06 会把 09:30 记成 -54s，真正 09:30 tick 随后被去重丢弃。
+      if (driftSeconds >= 0 && driftSeconds <= 90 && !observed.some(item => item.boundary === boundary)) observed.push({ boundary, driftSeconds })
     }
     const coverageSample = Number.isFinite(quoteCoverage) ? Math.max(0, Math.min(1, quoteCoverage)) : 0
     const coverageSamples = Array.isArray(previous?.coverageSamples)

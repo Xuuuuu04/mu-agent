@@ -45,6 +45,7 @@ import {
   marketSessionAuditRecordTool, researchIntelligenceStatusTool,
 } from './tools/builtin/finance/index.js'
 import { ResearchIntelligenceStore } from './finance/research-intelligence.js'
+import { DailyResearchOrchestrator } from './finance/daily-research.js'
 import {
   taskCreateTool, taskListTool, taskUpdateTool, taskReviewTool, taskDeleteTool,
 } from './tools/builtin/task.js'
@@ -117,6 +118,7 @@ async function main() {
     : resolve(config.paths.data, 'memory', 'trade-calendar.json')
   const marketClock = new MarketClock(calendarPath, !!config.scheduler.a_stock?.enabled)
   const researchIntelligence = new ResearchIntelligenceStore(config.paths.data)
+  const dailyResearch = new DailyResearchOrchestrator({ dataDir: config.paths.data, intelligence: researchIntelligence })
   const marketSessionAuditor = new MarketSessionAuditor(researchIntelligence)
   const scheduler = new Scheduler(config, store, marketClock)
   // 整合可用便宜模型,没配就用主模型
@@ -177,6 +179,7 @@ async function main() {
         watchdog: watchdog?.getHealthSnapshot() ?? null,
         market_event_monitor: eventMonitor?.getHealthSnapshot() ?? null,
         research_intelligence: safeResearchSnapshot(researchIntelligence),
+        daily_research: safeDailyResearchSnapshot(dailyResearch, watchdog?.getHealthSnapshot().next_tick_at ?? null),
         next_wake_at: sched.sleeping && sched.nextWake ? sched.nextWake.toISOString() : null,
         next_wake_reason: sched.sleeping ? sched.reason : null,
       }
@@ -266,8 +269,11 @@ async function main() {
       return parseIfindQuotePoints(result.output)
     },
     verifyPrices: fetchTencentPrices,
-    verifyQuotePoints: fetchTencentQuotePoints,
+    // 同一批腾讯请求顺带带上沪深300，供每日归因/outcome 基准使用；watchdog 只对持仓代码做 quorum。
+    verifyQuotePoints: codes => fetchTencentQuotePoints([...codes, 'sh000300']),
+    researchCodes: () => dailyResearch.pendingDecisionCodes(),
     recordQuoteCheck: value => researchIntelligence.saveQuoteCheck(value),
+    recordResearchTick: value => dailyResearch.recordTick(value),
     recordSessionTick: (now, coverage, overlap) => {
       const context = marketClock.context(now)
       const minutes = beijingMinutes(now)
@@ -276,6 +282,7 @@ async function main() {
       const afterClose = halfDay ? minutes >= 11 * 60 + 30 : context.phase === 'post_market'
       if (isTradingDay(now, context.calendar) && (active || minutes === 11 * 60 + 30 || afterClose)) {
         marketSessionAuditor.record(now, coverage, overlap, halfDay)
+        if (afterClose) dailyResearch.finalize(now)
       }
     },
   })
@@ -369,6 +376,11 @@ function safeResearchSnapshot(store: ResearchIntelligenceStore): Record<string, 
   } catch (error) {
     return { status: 'degraded', error: (error as Error).message }
   }
+}
+
+function safeDailyResearchSnapshot(orchestrator: DailyResearchOrchestrator, nextRunAt: string | null): Record<string, unknown> {
+  try { return { ...orchestrator.getHealthSnapshot(), next_run_at: nextRunAt } }
+  catch (error) { return { status: 'degraded', error: (error as Error).message } }
 }
 
 main().catch((err) => {

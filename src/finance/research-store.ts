@@ -79,6 +79,10 @@ function finiteRange(value: unknown, field: string, min: number, max: number): n
   return value
 }
 
+function optionalFiniteRange(value: unknown, field: string, min: number, max: number): number | undefined {
+  return value === undefined ? undefined : finiteRange(value, field, min, max)
+}
+
 function enumValue<T extends string>(value: unknown, field: string, allowed: readonly T[]): T {
   if (typeof value !== 'string' || !allowed.includes(value as T)) {
     validation(`${field} must be one of: ${allowed.join(', ')}`)
@@ -282,6 +286,23 @@ function parseDecision(value: unknown, index: number): DecisionEntry {
   const caseId = optionalString(item.case_id, `entries[${index}].case_id`)
   const positionId = optionalString(item.position_id, `entries[${index}].position_id`)
   if (!caseId && !positionId) validation(`entries[${index}] requires case_id or position_id`)
+  const code = optionalString(item.code, `entries[${index}].code`)
+  if (code !== undefined && !/^\d{6}$/.test(code)) validation(`entries[${index}].code must be a 6-digit security code`)
+  const decisionPrice = optionalFiniteRange(item.decision_price, `entries[${index}].decision_price`, Number.MIN_VALUE, Number.MAX_VALUE)
+  const benchmarkCode = optionalString(item.benchmark_code, `entries[${index}].benchmark_code`)
+  const benchmarkPrice = optionalFiniteRange(item.benchmark_price, `entries[${index}].benchmark_price`, Number.MIN_VALUE, Number.MAX_VALUE)
+  const horizonDays = optionalFiniteRange(item.horizon_days, `entries[${index}].horizon_days`, 1, 3650)
+  const dueAt = item.due_at === undefined ? undefined : isoTimestamp(item.due_at, `entries[${index}].due_at`)
+  const decisionPriceSource = optionalString(item.decision_price_source, `entries[${index}].decision_price_source`)
+  const decisionPriceAsOf = item.decision_price_as_of === undefined ? undefined : isoTimestamp(item.decision_price_as_of, `entries[${index}].decision_price_as_of`)
+  const benchmarkSource = optionalString(item.benchmark_source, `entries[${index}].benchmark_source`)
+  const benchmarkAsOf = item.benchmark_as_of === undefined ? undefined : isoTimestamp(item.benchmark_as_of, `entries[${index}].benchmark_as_of`)
+  const baseline = [code, decisionPrice, benchmarkCode, benchmarkPrice, horizonDays, dueAt,
+    decisionPriceSource, decisionPriceAsOf, benchmarkSource, benchmarkAsOf]
+  if (baseline.some(entry => entry !== undefined) && baseline.some(entry => entry === undefined)) {
+    validation(`entries[${index}] evaluation baseline must be complete`)
+  }
+  if (horizonDays !== undefined && !Number.isInteger(horizonDays)) validation(`entries[${index}].horizon_days must be an integer`)
   return {
     id: nonEmptyString(item.id, `entries[${index}].id`),
     action: enumValue(item.action, `entries[${index}].action`, DECISION_ACTIONS),
@@ -292,6 +313,10 @@ function parseDecision(value: unknown, index: number): DecisionEntry {
     invalidation: nonEmptyString(item.invalidation, `entries[${index}].invalidation`),
     evidence_ids: stringArray(item.evidence_ids, `entries[${index}].evidence_ids`),
     timestamp: isoTimestamp(item.timestamp, `entries[${index}].timestamp`),
+    ...(code === undefined ? {} : { code, decision_price: decisionPrice, benchmark_code: benchmarkCode,
+      benchmark_price: benchmarkPrice, horizon_days: horizonDays, due_at: dueAt,
+      decision_price_source: decisionPriceSource, decision_price_as_of: decisionPriceAsOf,
+      benchmark_source: benchmarkSource, benchmark_as_of: benchmarkAsOf }),
   }
 }
 
@@ -345,17 +370,45 @@ export class DecisionJournalStore {
     const caseId = optionalString(raw.case_id, 'case_id')
     const positionId = optionalString(raw.position_id, 'position_id')
     if (!caseId && !positionId) validation('decision requires case_id or position_id')
+    const action = enumValue(raw.action, 'action', DECISION_ACTIONS)
+    const actionable = ['buy', 'add', 'reduce', 'sell'].includes(action)
+    const code = optionalString(raw.code, 'code')
+    if (code !== undefined && !/^\d{6}$/.test(code)) validation('code must be a 6-digit security code')
+    const decisionPrice = optionalFiniteRange(raw.decision_price, 'decision_price', Number.MIN_VALUE, Number.MAX_VALUE)
+    const benchmarkCode = optionalString(raw.benchmark_code, 'benchmark_code')
+    const benchmarkPrice = optionalFiniteRange(raw.benchmark_price, 'benchmark_price', Number.MIN_VALUE, Number.MAX_VALUE)
+    const horizonDays = optionalFiniteRange(raw.horizon_days, 'horizon_days', 1, 3650)
+    const decisionPriceSource = optionalString(raw.decision_price_source, 'decision_price_source')
+    const decisionPriceAsOf = raw.decision_price_as_of === undefined ? undefined : isoTimestamp(raw.decision_price_as_of, 'decision_price_as_of')
+    const benchmarkSource = optionalString(raw.benchmark_source, 'benchmark_source')
+    const benchmarkAsOf = raw.benchmark_as_of === undefined ? undefined : isoTimestamp(raw.benchmark_as_of, 'benchmark_as_of')
+    if (horizonDays !== undefined && !Number.isInteger(horizonDays)) validation('horizon_days must be an integer')
+    const baseline = [code, decisionPrice, benchmarkCode, benchmarkPrice, horizonDays,
+      decisionPriceSource, decisionPriceAsOf, benchmarkSource, benchmarkAsOf]
+    if (actionable && baseline.some(entry => entry === undefined)) validation('actionable decision evaluation baseline must be complete')
+    if (!actionable && baseline.some(entry => entry !== undefined)) validation('non-actionable decision must not include an evaluation baseline')
+    const timestamp = isoTimestamp(this.now(), 'timestamp')
+    for (const [field, asOf] of [['decision_price_as_of', decisionPriceAsOf], ['benchmark_as_of', benchmarkAsOf]] as const) {
+      if (asOf !== undefined && (Date.parse(asOf) > Date.parse(timestamp) + 1000 || Date.parse(timestamp) - Date.parse(asOf) > 5 * 60_000)) {
+        validation(`${field} must be within five minutes before the decision timestamp`)
+      }
+    }
+    const dueAt = horizonDays === undefined ? undefined : new Date(Date.parse(timestamp) + horizonDays * 86_400_000).toISOString()
     const state = this.load()
     const entry: DecisionEntry = {
       id: nonEmptyString(this.id('decision'), 'generated decision id'),
-      action: enumValue(raw.action, 'action', DECISION_ACTIONS),
+      action,
       rationale: nonEmptyString(raw.rationale, 'rationale'),
       case_id: caseId,
       position_id: positionId,
       expected_outcome: nonEmptyString(raw.expected_outcome, 'expected_outcome'),
       invalidation: nonEmptyString(raw.invalidation, 'invalidation'),
       evidence_ids: stringArray(raw.evidence_ids, 'evidence_ids'),
-      timestamp: isoTimestamp(this.now(), 'timestamp'),
+      timestamp,
+      ...(code === undefined ? {} : { code, decision_price: decisionPrice, benchmark_code: benchmarkCode,
+        benchmark_price: benchmarkPrice, horizon_days: horizonDays, due_at: dueAt,
+        decision_price_source: decisionPriceSource, decision_price_as_of: decisionPriceAsOf,
+        benchmark_source: benchmarkSource, benchmark_as_of: benchmarkAsOf }),
     }
     state.entries.push(entry)
     this.save(state)

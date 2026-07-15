@@ -57,7 +57,7 @@ test('parseIfindPrices: 解析 iFind real_time 嵌套 JSON', () => {
   const m = parseIfindPrices(outer)
   assert.equal(m.get('003816'), 3.88)
   assert.equal(m.get('600519'), 1199.3)
-  assert.deepEqual(parseIfindQuotePoints(outer).get('003816'), { price: 3.88, asOf: '2026-07-08T08:01:21.000Z' })
+  assert.deepEqual(parseIfindQuotePoints(outer).get('003816'), { price: 3.88, asOf: '2026-07-08T08:01:21.000Z', sources: ['primary'] })
 })
 
 test('parseIfindPrices: 坏 JSON → 空 map 不抛', () => {
@@ -216,6 +216,46 @@ test('tick: detailed sources use exchange timestamps and reject stale quotes', (
   assert.equal(wd.getHealthSnapshot().quote_count, 0)
 }))
 
+test('tick: verified quote evidence is forwarded to the daily research orchestrator', () => withDir([pos({})], async (dir) => {
+  const received: unknown[] = []
+  const wd = new WatchdogManager({
+    dataDir: dir,
+    fetchPrices: async () => new Map(), verifyPrices: async () => new Map(),
+    fetchQuotePoints: async () => new Map([['003816', { price: 3.65, asOf: '2026-01-05T01:59:59Z' }]]),
+    verifyQuotePoints: async () => new Map([
+      ['003816', { name: '中国广核', price: 3.65, asOf: '2026-01-05T01:59:59Z', peTtm: 12, pb: 1.3 }],
+      ['000300', { name: '沪深300', price: 4500, asOf: '2026-01-05T01:59:59Z' }],
+    ]),
+    recordResearchTick: (value: unknown) => { received.push(value) },
+    deliverToUser: async () => {}, now: () => MON_10_UTC,
+  } as any)
+  await wd.tick()
+  assert.equal(received.length, 1)
+  const input = received[0] as { quotes: Map<string, { price: number; peTtm?: number; sources?: string[] }>; benchmark?: { price: number } }
+  assert.equal(input.quotes.get('003816')?.price, 3.65)
+  assert.equal(input.quotes.get('003816')?.peTtm, 12)
+  assert.deepEqual(input.quotes.get('003816')?.sources, ['primary', 'tencent'])
+  assert.equal(input.benchmark?.price, 4500)
+}))
+
+test('tick: pending decision symbols remain researched after the position is closed', () => withDir([], async (dir) => {
+  const received: unknown[] = []
+  const wd = new WatchdogManager({
+    dataDir: dir,
+    researchCodes: () => ['688012'],
+    fetchQuotePoints: async (codes: string[]) => new Map(codes.map((code: string) => [code, { price: 390, asOf: '2026-01-05T01:59:59Z', sources: ['primary'] }])),
+    verifyQuotePoints: async (codes: string[]) => new Map(codes.map((code: string) => [code.replace(/^(?:sh|sz|bj)/, ''),
+      { price: code.includes('000300') ? 4500 : 390, asOf: '2026-01-05T01:59:59Z', sources: ['tencent'] }])),
+    recordResearchTick: (value: unknown) => { received.push(value) },
+    deliverToUser: async () => {}, now: () => MON_10_UTC,
+  } as any)
+  await wd.tick()
+  assert.equal(received.length, 1)
+  const tick = received[0] as { positions: unknown[]; quotes: Map<string, { price: number }> }
+  assert.equal(tick.positions.length, 0)
+  assert.equal(tick.quotes.get('688012')?.price, 390)
+}))
+
 test('tick: 冷却 —— 同触发同日再 tick 不重复告警', () => withDir([pos({})], async (dir) => {
   const sent: string[] = []
   const wd = new WatchdogManager({
@@ -230,7 +270,7 @@ test('tick: 冷却 —— 同触发同日再 tick 不重复告警', () => withDi
   assert.equal(sent.length, 1, '同触发同日只告警一次')
 }))
 
-test('tick: 跨天 → 冷却清空,重新告警', () => withDir([pos({})], async (dir) => {
+test('tick: 跨天持续同一风险状态不机械重复告警', () => withDir([pos({})], async (dir) => {
   const sent: string[] = []
   let day = MON_10_UTC
   const wd = new WatchdogManager({
@@ -240,10 +280,50 @@ test('tick: 跨天 → 冷却清空,重新告警', () => withDir([pos({})], asyn
     now: () => day,
   })
   await wd.tick()
-  // 下一个交易日(周一+1=周二),同一只票应能再次告警
+  // 下一个交易日仍在同一止损状态，不应机械重复。
   day = new Date('2026-01-06T02:00:00.000Z') // 周二北京 10:00
   await wd.tick()
-  assert.equal(sent.length, 2)
+  assert.equal(sent.length, 1)
+}))
+
+test('tick: 告警按状态迁移——near升级breach、恢复安全区各通知一次', () => withDir([pos({})], async (dir) => {
+  const sent: string[] = []
+  let price = 3.72
+  let now = MON_10_UTC
+  const wd = new WatchdogManager({
+    dataDir: dir,
+    fetchPrices: async () => new Map([['003816', price]]),
+    deliverToUser: async text => { sent.push(text) },
+    now: () => now,
+  })
+  await wd.tick()
+  price = 3.65
+  await wd.tick()
+  now = new Date('2026-01-06T02:00:00.000Z')
+  await wd.tick()
+  price = 3.90
+  await wd.tick()
+  await wd.tick()
+  assert.equal(sent.length, 3)
+  assert.match(sent[0]!, /接近止损/)
+  assert.match(sent[1]!, /触止损/)
+  assert.match(sent[2]!, /脱离止损风险区/)
+}))
+
+test('tick: 告警投递失败会有界重试，且不重复写 alerts.log', () => withDir([pos({})], async (dir) => {
+  let attempts = 0
+  const wd = new WatchdogManager({
+    dataDir: dir,
+    fetchPrices: async () => new Map([['003816', 3.65]]),
+    deliverToUser: async () => { attempts++; if (attempts === 1) throw new Error('渠道临时不可用') },
+    now: () => MON_10_UTC,
+  })
+  await wd.tick()
+  await wd.tick()
+  await wd.tick()
+  assert.equal(attempts, 2)
+  const lines = readFileSync(join(dir, 'memory', 'alerts.log'), 'utf8').trim().split('\n')
+  assert.equal(lines.length, 1)
 }))
 
 test('tick: 取价失败 → 不告警不崩', () => withDir([pos({})], async (dir) => {
@@ -268,9 +348,11 @@ test('tick: 取价失败 → 不告警不崩', () => withDir([pos({})], async (d
 }))
 
 test('tick: 活跃持仓返回空报价 → 记录 degraded,不能静默当成功', () => withDir([pos({})], async (dir) => {
+  const researchTicks: unknown[] = []
   const wd = new WatchdogManager({
     dataDir: dir,
     fetchPrices: async () => new Map(),
+    recordResearchTick: value => { researchTicks.push(value) },
     deliverToUser: async () => {},
     now: () => MON_10_UTC,
   })
@@ -284,6 +366,7 @@ test('tick: 活跃持仓返回空报价 → 记录 degraded,不能静默当成�
   assert.deepEqual(health.missing_codes, ['003816'])
   assert.deepEqual(health.prices, {})
   assert.equal(health.as_of, null)
+  assert.equal(researchTicks.length, 1, '缺价也必须交给研究循环留下覆盖缺口')
   assert.match(health.last_error ?? '', /missing quotes.*003816/i)
   assert.deepEqual(
     JSON.parse(readFileSync(join(dir, 'memory', 'watchdog-health.json'), 'utf-8')),

@@ -126,6 +126,7 @@ export class AdminApi {
       backtest: this.objectView(this.readJsonFile('backtest/latest-report.json')),
       simulation_analysis: this.objectView(this.readJsonFile('backtest/latest-simulation-analysis.json')),
       research_intelligence: this.readIntelligenceView(),
+      daily_research: this.readDailyResearchView(),
     })
   }
 
@@ -164,6 +165,82 @@ export class AdminApi {
     } catch {
       return []
     }
+  }
+
+  private readDailyResearchView(): Record<string, unknown> {
+    const empty = (status: 'empty' | 'degraded', error: string | null = null) => ({ status, error, cycles: [],
+      last_attempt_at: null, last_success_at: null, last_finalized_date: null, next_run_at: null,
+      expected_codes: [], covered_codes: [], missing_codes: [], coverage: null,
+      active_expected_codes: [], active_covered_codes: [], active_missing_codes: [], active_coverage: null,
+      pending_decision_count: 0, due_decision_count: 0, oldest_due_at: null,
+      outcome_count: 0, outcome_window_count: 0, outcome_hit_rate: null,
+      average_excess_return: null, degraded_reasons: [] })
+    if (!this.opts.dataDir) return empty('empty')
+    const path = join(this.opts.dataDir, 'memory', 'daily-research.json')
+    if (!existsSync(path)) return empty('empty')
+    try {
+      const value = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+      if (value.version !== 1 || !Array.isArray(value.cycles)) return empty('degraded', 'daily research schema is invalid')
+      const validCycle = (item: unknown): item is Record<string, unknown> => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+        const cycle = item as Record<string, unknown>
+        return typeof cycle.date === 'string' && typeof cycle.code === 'string'
+          && (cycle.status === 'collecting' || cycle.status === 'finalized') && Array.isArray(cycle.missingEvidence)
+          && cycle.missingEvidence.every(reason => typeof reason === 'string')
+      }
+      if (!value.cycles.every(validCycle)) return empty('degraded', 'daily research schema is invalid')
+      const cycles = value.cycles.slice(-100) as Array<Record<string, unknown>>
+      const latestDate = cycles.at(-1)?.date
+      const latest = cycles.filter(item => item.date === latestDate)
+      const coverageRows = Array.isArray(value.coverageByDate) ? value.coverageByDate : []
+      const coverage = coverageRows.filter(item => item && typeof item === 'object' && !Array.isArray(item)).at(-1) as Record<string, unknown> | undefined
+      const strings = (input: unknown) => Array.isArray(input) ? input.filter(item => typeof item === 'string') as string[] : []
+      const expectedCodes = strings(coverage?.expectedCodes)
+      const coveredCodes = strings(coverage?.coveredCodes)
+      const missingCodes = strings(coverage?.missingCodes)
+      const activeExpectedCodes = strings(coverage?.activeExpectedCodes)
+      const activeCoveredCodes = strings(coverage?.activeCoveredCodes)
+      const activeMissingCodes = strings(coverage?.activeMissingCodes)
+      const latestCoverage = typeof coverage?.latestCoverage === 'number' && Number.isFinite(coverage.latestCoverage)
+        ? coverage.latestCoverage : expectedCodes.length ? coveredCodes.length / expectedCodes.length : null
+      const activeCoverage = typeof coverage?.activeCoverage === 'number' && Number.isFinite(coverage.activeCoverage)
+        ? coverage.activeCoverage : activeExpectedCodes.length ? activeCoveredCodes.length / activeExpectedCodes.length : null
+      const trackers = Array.isArray(value.decisionTrackers) ? value.decisionTrackers.filter(item => item && typeof item === 'object') as Array<Record<string, unknown>> : []
+      const dueDates = trackers.map(item => item.dueAt).filter((item): item is string => typeof item === 'string' && Number.isFinite(Date.parse(item))).sort()
+      const intelligence = this.readJsonFile('memory/research-intelligence.json') as Record<string, unknown> | null
+      const outcomes = intelligence && Array.isArray(intelligence.outcomes)
+        ? intelligence.outcomes.filter(item => item && typeof item === 'object') as Array<Record<string, unknown>> : []
+      const hits = outcomes.map(item => item.hit).filter((item): item is boolean => typeof item === 'boolean')
+      const excess = outcomes.map(item => item.excessReturn).filter((item): item is number => typeof item === 'number' && Number.isFinite(item))
+      const outcomeStats = this.objectView(intelligence?.outcomeStats)
+      const totalCount = typeof outcomeStats?.totalCount === 'number' && Number.isInteger(outcomeStats.totalCount)
+        && outcomeStats.totalCount >= outcomes.length ? outcomeStats.totalCount : outcomes.length
+      const hitCount = typeof outcomeStats?.hitCount === 'number' && Number.isInteger(outcomeStats.hitCount)
+        && outcomeStats.hitCount >= 0 && outcomeStats.hitCount <= totalCount ? outcomeStats.hitCount : hits.filter(Boolean).length
+      const excessReturnSum = typeof outcomeStats?.excessReturnSum === 'number' && Number.isFinite(outcomeStats.excessReturnSum)
+        ? outcomeStats.excessReturnSum : excess.reduce((sum, item) => sum + item, 0)
+      const watchdog = this.objectView(this.readJsonFile('memory/watchdog-health.json'))
+      const reasons = [...new Set(latest.flatMap(item => Array.isArray(item.missingEvidence)
+        ? item.missingEvidence.filter(reason => typeof reason === 'string') as string[] : []))]
+      if (missingCodes.length) reasons.push(`missing verified quotes: ${missingCodes.join(', ')}`)
+      if (latest.length) reasons.push('account cash and external cash flows are not configured')
+      const uniqueReasons = [...new Set(reasons)]
+      return { status: value.lastError ? 'degraded' : latest.length === 0 ? 'empty'
+        : uniqueReasons.length ? 'degraded' : latest.some(item => item.status === 'collecting') ? 'collecting' : 'healthy',
+        error: typeof value.lastError === 'string' ? value.lastError : null, cycles,
+        last_attempt_at: typeof value.lastAttemptAt === 'string' ? value.lastAttemptAt : null,
+        last_success_at: typeof value.lastSuccessAt === 'string' ? value.lastSuccessAt : null,
+        last_finalized_date: typeof value.lastFinalizedDate === 'string' ? value.lastFinalizedDate : null,
+        next_run_at: typeof watchdog?.next_tick_at === 'string' ? watchdog.next_tick_at : null,
+        expected_codes: expectedCodes, covered_codes: coveredCodes, missing_codes: missingCodes,
+        coverage: latestCoverage, active_expected_codes: activeExpectedCodes, active_covered_codes: activeCoveredCodes,
+        active_missing_codes: activeMissingCodes, active_coverage: activeCoverage, pending_decision_count: trackers.length,
+        due_decision_count: dueDates.filter(date => Date.parse(date) <= Date.now()).length,
+        oldest_due_at: dueDates.at(0) ?? null, outcome_count: totalCount, outcome_window_count: outcomes.length,
+        outcome_hit_rate: totalCount ? hitCount / totalCount : null,
+        average_excess_return: totalCount ? excessReturnSum / totalCount : null,
+        degraded_reasons: uniqueReasons }
+    } catch { return empty('degraded', 'daily research state is unreadable') }
   }
 
   private arrayField(value: unknown, field: string): unknown[] {
@@ -206,7 +283,22 @@ export class AdminApi {
     for (const key of ['id', 'action', 'rationale', 'timestamp']) {
       if (item[key] !== undefined && typeof item[key] !== 'string') return null
     }
-    return Object.fromEntries(['id', 'action', 'rationale', 'timestamp']
+    if (item.action !== undefined && !['buy', 'add', 'reduce', 'sell', 'hold', 'watch', 'avoid'].includes(String(item.action))) return null
+    const baselineKeys = ['code', 'decision_price', 'benchmark_code', 'benchmark_price', 'horizon_days', 'due_at',
+      'decision_price_source', 'decision_price_as_of', 'benchmark_source', 'benchmark_as_of']
+    const hasBaseline = baselineKeys.some(key => item[key] !== undefined)
+    if (hasBaseline) {
+      if (baselineKeys.some(key => item[key] === undefined) || typeof item.code !== 'string' || !/^\d{6}$/.test(item.code)
+        || typeof item.benchmark_code !== 'string' || !/^\d{6}$/.test(item.benchmark_code)
+        || typeof item.decision_price !== 'number' || !Number.isFinite(item.decision_price) || item.decision_price <= 0
+        || typeof item.benchmark_price !== 'number' || !Number.isFinite(item.benchmark_price) || item.benchmark_price <= 0
+        || typeof item.horizon_days !== 'number' || !Number.isInteger(item.horizon_days) || item.horizon_days < 1
+        || !['due_at', 'decision_price_as_of', 'benchmark_as_of'].every(key => typeof item[key] === 'string' && Number.isFinite(Date.parse(String(item[key]))))
+        || typeof item.decision_price_source !== 'string' || !item.decision_price_source.trim()
+        || typeof item.benchmark_source !== 'string' || !item.benchmark_source.trim()) return null
+    }
+    return Object.fromEntries(['id', 'action', 'rationale', 'timestamp', 'code', 'decision_price', 'benchmark_code', 'benchmark_price', 'horizon_days', 'due_at',
+      'decision_price_source', 'decision_price_as_of', 'benchmark_source', 'benchmark_as_of']
       .filter(key => item[key] !== undefined).map(key => [key, item[key]]))
   }
 

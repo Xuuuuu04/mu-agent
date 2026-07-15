@@ -3,10 +3,22 @@ export async function fetchTencentPrices(codes: string[], fetchImpl: typeof fetc
   return new Map([...quotes].map(([code, quote]) => [code, quote.price]))
 }
 
-export interface QuotePoint { price: number; asOf: string }
+export interface QuotePoint {
+  price: number
+  asOf: string
+  name?: string
+  peTtm?: number
+  pb?: number
+  marketCapYi?: number
+  sources?: string[]
+}
 
 export async function fetchTencentQuotePoints(codes: string[], fetchImpl: typeof fetch = fetch): Promise<Map<string, QuotePoint>> {
-  const symbols = [...new Set(codes)].filter(code => /^\d{6}$/.test(code)).map(code => `${code.startsWith('6') ? 'sh' : 'sz'}${code}`)
+  const symbols = [...new Set(codes)].flatMap(code => {
+    if (/^(?:sh|sz|bj)\d{6}$/i.test(code)) return [code.toLowerCase()]
+    if (!/^\d{6}$/.test(code)) return []
+    return [`${code.startsWith('6') || code.startsWith('9') ? 'sh' : code.startsWith('8') || code.startsWith('4') ? 'bj' : 'sz'}${code}`]
+  })
   if (symbols.length === 0) return new Map()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 5_000)
@@ -24,13 +36,25 @@ export function parseTencentPrices(body: string): Map<string, number> {
 export function parseTencentQuotePoints(body: string): Map<string, QuotePoint> {
   const prices = new Map<string, QuotePoint>()
   for (const line of body.split(';')) {
-    const match = line.match(/v_(?:sh|sz)(\d{6})="([\s\S]*)"/)
+    const match = line.match(/v_(?:sh|sz|bj)(\d{6})="([\s\S]*)"/)
     if (!match) continue
     const fields = match[2]!.split('~')
     const price = Number(fields[3])
     const timestamp = fields[30] ?? ''
     const asOf = parseTencentTimestamp(timestamp)
-    if (Number.isFinite(price) && price > 0 && asOf) prices.set(match[1]!, { price, asOf })
+    if (Number.isFinite(price) && price > 0 && asOf) {
+      const optionalPositive = (value: string | undefined) => {
+        const number = Number(value)
+        return Number.isFinite(number) && number > 0 ? number : undefined
+      }
+      prices.set(match[1]!, {
+        price, asOf, sources: ['tencent'],
+        ...(fields[1]?.trim() ? { name: fields[1].trim() } : {}),
+        ...(optionalPositive(fields[39]) === undefined ? {} : { peTtm: optionalPositive(fields[39]) }),
+        ...(optionalPositive(fields[46]) === undefined ? {} : { pb: optionalPositive(fields[46]) }),
+        ...(optionalPositive(fields[44]) === undefined ? {} : { marketCapYi: optionalPositive(fields[44]) }),
+      })
+    }
   }
   return prices
 }

@@ -24,6 +24,23 @@ test('MarketSessionAuditor accumulates boundary evidence and upserts one daily a
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('MarketSessionAuditor never lets an early cadence tick claim a future boundary', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shion-session-early-'))
+  try {
+    const store = new ResearchIntelligenceStore(dir)
+    const audit = new MarketSessionAuditor(store)
+    audit.record(new Date('2026-07-13T01:29:06Z'), 1, 0)
+    audit.record(new Date('2026-07-13T01:30:00Z'), 1, 0)
+    audit.record(new Date('2026-07-13T06:58:31Z'), 1, 0)
+    audit.record(new Date('2026-07-13T07:00:00Z'), 1, 0)
+    const observed = store.snapshot().sessionAudits[0]!.observed
+    assert.deepEqual(observed, [
+      { boundary: '09:30', driftSeconds: 0 },
+      { boundary: '15:00', driftSeconds: 0 },
+    ])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('MarketSessionAuditor averages all coverage samples and uses half-day boundaries', () => {
   const dir = mkdtempSync(join(tmpdir(), 'shion-session-half-'))
   try {

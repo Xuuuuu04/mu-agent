@@ -63,6 +63,16 @@ export interface DecisionEntry {
   invalidation: string
   evidence_ids: string[]
   timestamp: string
+  code?: string
+  decision_price?: number
+  benchmark_code?: string
+  benchmark_price?: number
+  horizon_days?: number
+  due_at?: string
+  decision_price_source?: string
+  decision_price_as_of?: string
+  benchmark_source?: string
+  benchmark_as_of?: string
 }
 
 export interface DecisionRecord {
@@ -73,4 +83,13 @@ export interface DecisionRecord {
   expected_outcome: string
   invalidation: string
   evidence_ids: string[]
+  code?: string
+  decision_price?: number
+  benchmark_code?: string
+  benchmark_price?: number
+  horizon_days?: number
+  decision_price_source?: string
+  decision_price_as_of?: string
+  benchmark_source?: string
+  benchmark_as_of?: string
 }

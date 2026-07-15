@@ -108,3 +108,25 @@ test('DecisionJournalStore: records append-only linked decisions and validates a
   }), /case_id|position_id/)
   assert.equal(readFileSync(join(dataDir, 'memory', 'decision-journal.json'), 'utf8').includes('decision-1'), true)
 }))
+
+test('DecisionJournalStore: actionable decisions require an immutable evaluation baseline', () => withDataDir(dataDir => {
+  const store = new DecisionJournalStore(dataDir, {
+    now: () => '2026-07-15T01:30:00.000Z', id: () => 'decision-evaluable',
+  })
+  assert.throws(() => store.record({
+    action: 'buy', rationale: '进入估值区间', position_id: 'p1', expected_outcome: '跑赢沪深300',
+    invalidation: '盈利预期下修', evidence_ids: [],
+  }), /evaluation baseline/)
+  const entry = store.record({
+    action: 'buy', rationale: '进入估值区间', position_id: 'p1', expected_outcome: '跑赢沪深300',
+    invalidation: '盈利预期下修', evidence_ids: [], code: '688012', decision_price: 400,
+    benchmark_code: '000300', benchmark_price: 4500, horizon_days: 1,
+    decision_price_source: 'ifind+tencent quorum', decision_price_as_of: '2026-07-15T01:29:59.000Z',
+    benchmark_source: 'tencent', benchmark_as_of: '2026-07-15T01:29:59.000Z',
+  } as any)
+  assert.equal((entry as any).code, '688012')
+  assert.equal((entry as any).decision_price, 400)
+  assert.equal((entry as any).horizon_days, 1)
+  assert.equal((entry as any).due_at, '2026-07-16T01:30:00.000Z')
+  assert.equal((entry as any).decision_price_source, 'ifind+tencent quorum')
+}))

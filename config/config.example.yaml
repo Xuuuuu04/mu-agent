@@ -57,6 +57,7 @@ scheduler:
   #     event_interval_seconds: 900         # 持仓公告每 15 分钟检查一次,不调用 LLM
   #     near_pct: 0.01                      # 距止损/止盈线 1% 预警
   # 成本估算:按 180/60/30 秒配置,完整交易日约 100 次批量报价请求(全部持仓合并为一批),0 次 LLM 调用;
+  # 每次腾讯验证批次会顺带取沪深300；09:30 后自动生成 trailing PE/PB 快照，日终生成持仓市值归因并评估到期决策。
   # 连续竞价用 300 秒时约 68 次。先看 /api/status 的 market_phase、watchdog.next_tick_at、
   # watchdog.cadence_reason、scheduler_queue 和 scheduler_calendar_health 再调参,异常可将 watchdog.enabled=false 回滚。
   # 日历 missing/corrupt/stale 时只按周一至周五降级推理,法定假日可能误判为交易日;此时 status 会标 degraded,

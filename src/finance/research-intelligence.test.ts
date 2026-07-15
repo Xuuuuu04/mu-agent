@@ -105,6 +105,22 @@ test('valuation exposes field-level missing/stale evidence and rejects future ev
   assert.equal(priceOnly.coverage, 'low')
 })
 
+test('calculateValuationSnapshot records trailing evidence without inventing scenario PE', () => {
+  const snapshot = calculateValuationSnapshot({
+    code: '688012', asOf: '2026-07-15T06:48:08Z', price: 391.04,
+    epsTtm: 391.04 / 68.5, bookValuePerShare: 391.04 / 12.4,
+    evidence: {
+      price: { source: 'tencent', asOf: '2026-07-15T06:48:08Z' },
+      epsTtm: { source: 'tencent-derived-pe-ttm', asOf: '2026-07-15T06:48:08Z' },
+      bookValuePerShare: { source: 'tencent-derived-pb', asOf: '2026-07-15T06:48:08Z' },
+    },
+  })
+  assert.equal(snapshot.peTtm, 68.5)
+  assert.equal(snapshot.pb, 12.4)
+  assert.equal(snapshot.scenarioValues, null)
+  assert.equal(snapshot.assumptions.targetPe, null)
+})
+
 test('attributePortfolio: 持仓与行业贡献之和可解释,费用单列', () => {
   const a = attributePortfolio({ startEquity: 100000, actualEndEquity: 100700, netCashFlow: 0,
     benchmarkReturn: 0.01, fees: 100, slippage: 0, positions: [
@@ -160,13 +176,15 @@ test('ResearchIntelligenceStore: 原子持久化各类快照并对事件幂等�
     store.saveValuation({ code: '600519', asOf: '2026-07-13T01:00:00Z', value: 1 })
     store.saveAttribution({ asOf: '2026-07-13T07:00:00Z', netReturn: 0.01 })
     store.saveOutcome({ decisionId: 'd1', horizonDays: 20, decisionAt: '2026-06-01T00:00:00Z',
-      dueAt: '2026-06-21T00:00:00Z', observedAt: '2026-06-21T08:00:00Z', excessReturn: 0.02 })
+      dueAt: '2026-06-21T00:00:00Z', observedAt: '2026-06-21T08:00:00Z', excessReturn: 0.02, hit: true })
     store.saveSessionAudit({ date: '2026-07-13', pass: true })
     const restored = new ResearchIntelligenceStore(dir).snapshot()
     assert.equal(restored.events.length, 1)
     assert.equal(restored.valuations[0]!.code, '600519')
     assert.equal(restored.attributions.length, 1)
     assert.equal(restored.outcomes.length, 1)
+    assert.deepEqual(restored.outcomeStats, { totalCount: 1, hitCount: 1, excessReturnSum: 0.02 })
+    assert.deepEqual(restored.completedOutcomeKeys, ['d1|20'])
     assert.equal(restored.sessionAudits.length, 1)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
@@ -185,15 +203,22 @@ test('ResearchIntelligenceStore rejects duplicate quote, valuation and attributi
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('ResearchIntelligenceStore: bounded public state prevents unbounded growth', () => {
+test('ResearchIntelligenceStore: bounded detail keeps durable completion identities and full-history aggregates', () => {
   const dir = mkdtempSync(join(tmpdir(), 'shion-intel-'))
   try {
     const store = new ResearchIntelligenceStore(dir)
     store.saveValuation({ code: '600519', asOf: '2026-07-13T01:00:00Z' })
     // bounded public API 不允许无限增长
     for (let i = 0; i < 250; i++) store.saveOutcome({ decisionId: `d${i}`, horizonDays: 20,
-      decisionAt: '2026-06-01T00:00:00Z', dueAt: '2026-06-21T00:00:00Z', observedAt: '2026-06-21T08:00:00Z' })
-    assert.equal(store.snapshot().outcomes.length, 200)
+      decisionAt: '2026-06-01T00:00:00Z', dueAt: '2026-06-21T00:00:00Z', observedAt: '2026-06-21T08:00:00Z',
+      hit: i % 2 === 0, excessReturn: i % 2 === 0 ? 0.01 : -0.01 })
+    const state = store.snapshot()
+    assert.equal(state.outcomes.length, 200, 'public outcome details stay bounded')
+    assert.equal(state.completedOutcomeKeys.length, 250, 'completion identities must not be evicted with details')
+    assert.deepEqual(state.outcomeStats, { totalCount: 250, hitCount: 125, excessReturnSum: 0 })
+    assert.throws(() => store.saveOutcome({ decisionId: 'd0', horizonDays: 20,
+      decisionAt: '2026-06-01T00:00:00Z', dueAt: '2026-06-21T00:00:00Z', observedAt: '2026-06-21T08:00:00Z',
+      hit: true, excessReturn: 0.01 }), /already recorded/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -202,7 +227,7 @@ test('ResearchIntelligenceStore rejects duplicate decision+horizon outcomes and 
   try {
     const store = new ResearchIntelligenceStore(dir)
     const value = { decisionId: 'd1', horizonDays: 20, decisionAt: '2026-06-01T00:00:00Z',
-      dueAt: '2026-06-21T00:00:00Z', observedAt: '2026-06-21T08:00:00Z' }
+      dueAt: '2026-06-21T00:00:00Z', observedAt: '2026-06-21T08:00:00Z', hit: true, excessReturn: 0.01 }
     store.saveOutcome(value)
     assert.throws(() => store.saveOutcome(value), /already recorded/)
     assert.throws(() => store.saveOutcome({ ...value, decisionId: 'd2', observedAt: '2026-06-20T00:00:00Z' }), /observation window/)

@@ -77,7 +77,7 @@ export function mergeMarketEvents(existing: MarketEvent[], incoming: RawMarketEv
 export interface ValuationInput {
   code: string; asOf: string; price: number; epsTtm?: number; bookValuePerShare?: number
   forwardEps?: number; nextForwardEps?: number; analystCount?: number
-  targetPe: { bear: number; base: number; bull: number }
+  targetPe?: { bear: number; base: number; bull: number }
   evidence: Partial<Record<'price' | 'epsTtm' | 'bookValuePerShare' | 'forwardEps' | 'nextForwardEps', { source: string; asOf: string }>>
 }
 
@@ -97,9 +97,12 @@ export function calculateValuationSnapshot(input: ValuationInput) {
   const growth = forward && next ? next / forward - 1 : null
   const forwardPe = forward ? price / forward : null
   const peg = forwardPe && growth && growth > 0 ? forwardPe / (growth * 100) : null
-  const target = input.targetPe
-  for (const value of Object.values(target)) if (!Number.isFinite(value) || value <= 0) throw new Error('invalid target PE')
-  if (!(target.bear <= target.base && target.base <= target.bull)) throw new Error('target PE scenarios must be bear <= base <= bull')
+  const target = input.targetPe ?? null
+  if (target) {
+    for (const value of Object.values(target)) if (!Number.isFinite(value) || value <= 0) throw new Error('invalid target PE')
+    if (!(target.bear <= target.base && target.base <= target.bull)) throw new Error('target PE scenarios must be bear <= base <= bull')
+  }
+  if (forward && !target) throw new Error('target PE scenarios are required when forward EPS is provided')
   if (input.analystCount !== undefined && (!Number.isInteger(input.analystCount) || input.analystCount < 0)) throw new Error('invalid analyst count')
   const values = { price: input.price, epsTtm: input.epsTtm, bookValuePerShare: input.bookValuePerShare,
     forwardEps: input.forwardEps, nextForwardEps: input.nextForwardEps }
@@ -126,13 +129,13 @@ export function calculateValuationSnapshot(input: ValuationInput) {
     forwardPe: forwardPe ? round(forwardPe, 2) : null,
     growth: growth === null ? null : round(growth, 4),
     peg: peg === null ? null : round(peg, 2),
-    scenarioValues: forward ? {
+    scenarioValues: forward && target ? {
       bear: round(forward * target.bear, 2), base: round(forward * target.base, 2), bull: round(forward * target.bull, 2),
     } : null,
     analystCount: input.analystCount ?? 0,
     coverage: evidenceCoverageLevel,
     evidenceCoverage,
-    assumptions: { targetPe: { ...target }, forwardEps: forward, nextForwardEps: next },
+    assumptions: { targetPe: target ? { ...target } : null, forwardEps: forward, nextForwardEps: next },
   }
 }
 
@@ -234,12 +237,18 @@ interface IntelligenceState {
   valuations: Array<Record<string, unknown>>
   attributions: Array<Record<string, unknown>>
   outcomes: Array<Record<string, unknown>>
+  completedOutcomeKeys: string[]
+  outcomeStats: { totalCount: number; hitCount: number; excessReturnSum: number }
   sessionAudits: Array<Record<string, unknown>>
 }
 
 const EMPTY_STATE = (): IntelligenceState => ({
-  version: 1, quoteChecks: [], events: [], valuations: [], attributions: [], outcomes: [], sessionAudits: [],
+  version: 1, quoteChecks: [], events: [], valuations: [], attributions: [], outcomes: [],
+  completedOutcomeKeys: [], outcomeStats: { totalCount: 0, hitCount: 0, excessReturnSum: 0 }, sessionAudits: [],
 })
+
+const OUTCOME_DETAIL_LIMIT = 200
+const OUTCOME_IDENTITY_LIMIT = 10_000
 
 export class ResearchIntelligenceStore {
   private readonly path: string
@@ -263,6 +272,24 @@ export class ResearchIntelligenceStore {
 
   saveQuoteCheck(value: Record<string, unknown>): void { this.appendUnique('quoteChecks', value, ['code', 'checkedAt']) }
   saveValuation(value: Record<string, unknown>): void { this.appendUnique('valuations', value, ['code', 'asOf']) }
+  saveValuations(values: Array<Record<string, unknown>>): number {
+    if (!Array.isArray(values)) throw new Error('valuations batch must be an array')
+    if (values.length === 0) return 0
+    const state = this.load()
+    const identities = new Set(state.valuations.map(item => `${item.code}|${item.asOf}`))
+    let added = 0
+    for (const value of values.slice(0, 500)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)
+        || typeof value.code !== 'string' || !value.code.trim() || typeof value.asOf !== 'string' || !value.asOf.trim()) {
+        throw new Error('valuations entry is missing identity')
+      }
+      const identity = `${value.code}|${value.asOf}`
+      if (identities.has(identity)) continue
+      state.valuations.push(structuredClone(value)); identities.add(identity); added++
+    }
+    if (added > 0) { state.valuations = state.valuations.slice(-200); this.save(state) }
+    return added
+  }
   saveAttribution(value: Record<string, unknown>): void { this.appendUnique('attributions', value, ['asOf']) }
   saveOutcome(value: Record<string, unknown>): void {
     const decisionId = typeof value.decisionId === 'string' ? value.decisionId.trim() : ''
@@ -274,12 +301,24 @@ export class ResearchIntelligenceStore {
       || ![value.decisionAt, value.dueAt, value.observedAt].every(item => typeof item === 'string' && explicitTimestamp(item))
       || !Number.isFinite(decisionAt) || !Number.isFinite(dueAt) || !Number.isFinite(observedAt)
       || Math.abs(dueAt - decisionAt - Number(horizonDays) * 86_400_000) > 60_000
-      || observedAt < dueAt) throw new Error('invalid outcome identity or observation window')
+      || observedAt < dueAt || typeof value.hit !== 'boolean'
+      || typeof value.excessReturn !== 'number' || !Number.isFinite(value.excessReturn)) {
+      throw new Error('invalid outcome identity, metrics, or observation window')
+    }
     const state = this.load()
-    if (state.outcomes.some(item => item.decisionId === decisionId && item.horizonDays === horizonDays)) {
+    const identity = `${decisionId}|${horizonDays}`
+    if (state.completedOutcomeKeys.includes(identity)) {
       throw new Error('outcome already recorded for decision and horizon')
     }
-    state.outcomes.push(structuredClone(value)); state.outcomes = state.outcomes.slice(-200); this.save(state)
+    if (state.completedOutcomeKeys.length >= OUTCOME_IDENTITY_LIMIT) {
+      throw new Error(`outcome identity capacity ${OUTCOME_IDENTITY_LIMIT} reached; archive is required`)
+    }
+    state.outcomes.push(structuredClone(value)); state.outcomes = state.outcomes.slice(-OUTCOME_DETAIL_LIMIT)
+    state.completedOutcomeKeys.push(identity)
+    state.outcomeStats.totalCount++
+    if (value.hit) state.outcomeStats.hitCount++
+    state.outcomeStats.excessReturnSum = round(state.outcomeStats.excessReturnSum + value.excessReturn, 8)
+    this.save(state)
   }
   saveSessionAudit(value: Record<string, unknown>): void {
     const state = this.load()
@@ -320,7 +359,24 @@ export class ResearchIntelligenceStore {
       || !Array.isArray(state.attributions) || !Array.isArray(state.outcomes) || !Array.isArray(state.sessionAudits)) {
       throw new Error('research intelligence state is corrupt: schema')
     }
-    return state as IntelligenceState
+    const derivedKeys = state.outcomes.flatMap(item => typeof item.decisionId === 'string' && Number.isInteger(item.horizonDays)
+      ? [`${item.decisionId}|${item.horizonDays}`] : [])
+    const completedOutcomeKeys = state.completedOutcomeKeys ?? derivedKeys
+    const outcomeStats = state.outcomeStats ?? {
+      totalCount: derivedKeys.length,
+      hitCount: state.outcomes.filter(item => item.hit === true).length,
+      excessReturnSum: round(state.outcomes.reduce((sum, item) => sum
+        + (typeof item.excessReturn === 'number' && Number.isFinite(item.excessReturn) ? item.excessReturn : 0), 0), 8),
+    }
+    if (!Array.isArray(completedOutcomeKeys) || completedOutcomeKeys.length > OUTCOME_IDENTITY_LIMIT
+      || completedOutcomeKeys.some(key => typeof key !== 'string' || !/^.+\|\d+$/.test(key))
+      || new Set(completedOutcomeKeys).size !== completedOutcomeKeys.length
+      || !outcomeStats || !Number.isInteger(outcomeStats.totalCount) || outcomeStats.totalCount < 0
+      || !Number.isInteger(outcomeStats.hitCount) || outcomeStats.hitCount < 0 || outcomeStats.hitCount > outcomeStats.totalCount
+      || !Number.isFinite(outcomeStats.excessReturnSum) || outcomeStats.totalCount !== completedOutcomeKeys.length) {
+      throw new Error('research intelligence state is corrupt: outcome ledger')
+    }
+    return { ...(state as IntelligenceState), completedOutcomeKeys, outcomeStats }
   }
 
   private save(state: IntelligenceState): void {

@@ -2,8 +2,8 @@
 // 设计要点(对标 Task D3 混合架构):
 //  - 确定性定时器查价,不唤醒 LLM(省 token);只在触线时发模板告警。
 //  - 非交易时段(周末/节假日/盘后)tick 自动跳过,不浪费报价调用。
-//  - 每只票每个触发类型每天最多告警 1 条(冷却,防刷屏);跨天清空。
-//  - 告警双写:alerts.log(本地必达)+ deliverToUser(微信,尽力,stale 可能丢 → log 兜底)。
+//  - 告警按风险状态迁移发送；跨天持续处于同一状态不重复，升级/恢复会重新通知。
+//  - 告警双写:alerts.log(本地留底)+ deliverToUser；投递失败保留未送达状态并在后续 tick 重试。
 // 价格获取 + 投递都走依赖注入,watchdog 不直接耦合 registry / bridge,便于单测。
 import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -17,7 +17,15 @@ import { reconcileQuotes } from '../finance/research-intelligence.js'
 const ACTIVE_PHASES = new Set(['call_auction', 'morning', 'afternoon', 'call_close'])
 
 export type PriceFetcher = (codes: string[]) => Promise<Map<string, number>>
-export interface PriceQuotePoint { price: number; asOf: string }
+export interface PriceQuotePoint {
+  price: number
+  asOf: string
+  name?: string
+  peTtm?: number
+  pb?: number
+  marketCapYi?: number
+  sources?: string[]
+}
 export type DetailedPriceFetcher = (codes: string[]) => Promise<Map<string, PriceQuotePoint>>
 export type Deliver = (text: string) => Promise<void>
 
@@ -34,6 +42,10 @@ export interface WatchdogDeps {
   verifyQuotePoints?: DetailedPriceFetcher
   recordQuoteCheck?: (value: Record<string, unknown>) => void
   recordSessionTick?: (now: Date, quoteCoverage: number, overlapSuppressed: number) => void
+  researchCodes?: () => string[]
+  recordResearchTick?: (value: {
+    now: Date; positions: Position[]; quotes: Map<string, PriceQuotePoint>; benchmark?: PriceQuotePoint
+  }) => void | Promise<void>
   deliverToUser: Deliver
   calendarPath?: string
   intervalSec?: number      // 默认 180
@@ -70,8 +82,10 @@ export interface WatchdogHealthSnapshot {
 }
 
 interface WatchdogState {
-  date: string              // YYYY-MM-DD(北京),跨天清 fired
-  fired: string[]           // `${code}:${type}` 已告警
+  version: 2
+  date: string              // 最近一次状态变化的北京时间日期，仅保留兼容审计
+  fired: string[]           // 兼容旧审计；实际冷却由 active 状态机决定
+  active: Record<string, { type: Trigger['type']; line: number | null; enteredAt: string; delivered?: boolean; recoveryPending?: boolean }>
 }
 
 export class WatchdogManager {
@@ -216,7 +230,12 @@ export class WatchdogManager {
       })
       return
     }
-    if (positions.length === 0) {
+    const activeCodesOrdered = uniqueSorted(positions.map(position => position.code))
+    const activeCodeSet = new Set(activeCodesOrdered)
+    const researchCodes = uniqueSorted(this.deps.researchCodes?.().filter(code => /^\d{6}$/.test(code)
+      && !activeCodeSet.has(code)) ?? [])
+    const monitoredCodes = [...activeCodesOrdered, ...researchCodes].slice(0, 600)
+    if (monitoredCodes.length === 0) {
       this.updateHealth({
         status: calendarError ? 'degraded' : 'idle',
         last_tick_at: nowIso,
@@ -238,7 +257,7 @@ export class WatchdogManager {
     let primaryPoints: Map<string, PriceQuotePoint> | null = null
     let verifierPoints: Map<string, PriceQuotePoint> | null = null
     try {
-      const codes = positions.map(p => p.code)
+      const codes = monitoredCodes
       if (this.deps.fetchQuotePoints && this.deps.verifyQuotePoints) {
         const [primary, verifier] = await Promise.allSettled([this.deps.fetchQuotePoints(codes), this.deps.verifyQuotePoints(codes)])
         if (primary.status === 'rejected') throw primary.reason
@@ -266,15 +285,19 @@ export class WatchdogManager {
         last_error_at: nowIso,
         skipped_reason: null,
       })
+      try { await this.deps.recordResearchTick?.({ now, positions, quotes: new Map() }) } catch (researchError) {
+        console.error(`[watchdog] 每日研究缺口留证失败: ${(researchError as Error).message}`)
+      }
       return
     }
 
     const prices = new Map<string, number>()
     const currentPrices: Record<string, number> = {}
-    const missingCodes: string[] = []
+    const missingCodes: string[] = activeCodesOrdered.slice(600)
     const qualityChecks: Array<Record<string, unknown>> = []
     let verifiedQuoteCount = 0
-    for (const code of uniqueSorted(positions.map(p => p.code))) {
+    const activeCodes = new Set(positions.map(position => position.code))
+    for (const code of monitoredCodes) {
       let price = primaryPrices.get(code)
       if (this.deps.verifyPrices || (this.deps.fetchQuotePoints && this.deps.verifyQuotePoints)) {
         const observations = [
@@ -285,11 +308,15 @@ export class WatchdogManager {
         qualityChecks.push({ code, checkedAt: nowIso, timestampBasis: primaryPoints ? 'source_time' : 'receipt_time', observations, ...quality })
         if (quality.status === 'consistent' && quality.consensusPrice !== null) {
           price = quality.consensusPrice
-          verifiedQuoteCount++
+          if (activeCodes.has(code)) verifiedQuoteCount++
         } else price = undefined
       }
-      if (price == null || !Number.isFinite(price) || price <= 0) missingCodes.push(code)
-      else { currentPrices[code] = price; prices.set(code, price) }
+      if (price == null || !Number.isFinite(price) || price <= 0) {
+        if (activeCodes.has(code)) missingCodes.push(code)
+      } else {
+        if (activeCodes.has(code)) currentPrices[code] = price
+        prices.set(code, price)
+      }
     }
     const quoteVerification: WatchdogHealthSnapshot['quote_verification'] = !(this.deps.verifyPrices || this.deps.verifyQuotePoints) ? 'not_configured'
       : qualityChecks.every(x => x.status === 'consistent') ? 'consistent'
@@ -323,25 +350,62 @@ export class WatchdogManager {
     })
     if (quoteError) console.error(`[watchdog] ${quoteError}`)
 
+    if (this.deps.recordResearchTick) {
+      const researchQuotes = new Map<string, PriceQuotePoint>()
+      for (const [code, price] of prices) {
+        const detail = verifierPoints?.get(code) ?? primaryPoints?.get(code)
+        const quality = qualityChecks.find(item => item.code === code)
+        const sources = Array.isArray(quality?.acceptedSources)
+          ? quality.acceptedSources.filter(source => typeof source === 'string') as string[] : []
+        researchQuotes.set(code, { ...(detail ?? { asOf: nowIso }), price, ...(sources.length ? { sources } : {}) })
+      }
+      try {
+        await this.deps.recordResearchTick({ now, positions, quotes: researchQuotes,
+          ...(verifierPoints?.get('000300') ? { benchmark: verifierPoints.get('000300') } : {}) })
+      } catch (error) {
+        console.error(`[watchdog] 每日研究留证失败: ${(error as Error).message}`)
+      }
+    }
+
     const state = this.loadState(now)
-    let fired = false
+    let changed = false
     for (const p of positions) {
       const price = prices.get(p.code)
       if (price == null || !Number.isFinite(price) || price <= 0) continue
-      for (const trig of checkTriggers(p, price, this.nearPct)) {
-        const key = `${p.code}:${trig.type}`
-        if (state.fired.includes(key)) continue
-        const text = alertText(p, price, trig, now)
-        this.appendAlert(text)
-        try { await this.deps.deliverToUser(text) } catch (err) {
-          console.error(`[watchdog] 告警投递失败(alerts.log 已留底): ${(err as Error).message}`)
+      const current = new Map(checkTriggers(p, price, this.nearPct).map(trigger => [triggerFamily(trigger.type), trigger]))
+      for (const family of ['stop_loss', 'take_profit'] as const) {
+        const stateKey = `${p.code}:${family}`
+        const previous = state.active[stateKey]
+        const trigger = current.get(family)
+        if (trigger) {
+          const transitioned = !previous || previous.type !== trigger.type
+            || (previous.line !== null && previous.line !== trigger.line)
+          let delivered = previous?.delivered !== false
+          if (transitioned) {
+            delivered = await this.emitAlert(alertText(p, price, trigger, now))
+            console.log(`[watchdog] 告警状态变化: ${p.code} ${previous?.type ?? 'safe'} -> ${trigger.type} @${price}`)
+          } else if (previous?.delivered === false) {
+            delivered = await this.emitAlert(alertText(p, price, trigger, now), false)
+          }
+          if (transitioned || previous?.line === null || previous?.delivered !== delivered || previous?.recoveryPending) {
+            state.active[stateKey] = { type: trigger.type, line: trigger.line,
+              enteredAt: transitioned ? nowIso : previous?.enteredAt ?? nowIso, delivered }
+            const legacyKey = `${p.code}:${trigger.type}`
+            if (!state.fired.includes(legacyKey)) state.fired.push(legacyKey)
+            state.date = beijingDateStr(now)
+            changed = true
+          }
+        } else if (previous) {
+          const delivered = await this.emitAlert(recoveryText(p, price, previous.type, now), !previous.recoveryPending)
+          if (delivered) delete state.active[stateKey]
+          else state.active[stateKey] = { ...previous, recoveryPending: true }
+          state.date = beijingDateStr(now)
+          changed = true
+          if (delivered) console.log(`[watchdog] 告警恢复: ${p.code} ${previous.type} -> safe @${price}`)
         }
-        state.fired.push(key)
-        fired = true
-        console.log(`[watchdog] 告警: ${p.code} ${trig.type} @${price}`)
       }
     }
-    if (fired) this.saveState(state)
+    if (changed) this.saveState(state)
   }
 
   // ── 状态落盘(冷却)──
@@ -386,13 +450,27 @@ export class WatchdogManager {
     const today = beijingDateStr(now)
     if (existsSync(this.statePath())) {
       try {
-        const s = JSON.parse(readFileSync(this.statePath(), 'utf-8')) as WatchdogState
-        if (s.date === today && Array.isArray(s.fired)) return s
+        const s = JSON.parse(readFileSync(this.statePath(), 'utf-8')) as Partial<WatchdogState>
+        if (s.version === 2 && Array.isArray(s.fired) && s.active && typeof s.active === 'object') {
+          return { version: 2, date: typeof s.date === 'string' ? s.date : today,
+            fired: s.fired.filter(value => typeof value === 'string'), active: s.active }
+        }
+        // v1 每日 fired 迁移：保留触发类型，line 首次见到时补齐且不重复发送。
+        if (Array.isArray(s.fired)) {
+          const active: WatchdogState['active'] = {}
+          for (const value of s.fired) {
+            if (typeof value !== 'string') continue
+            const [code, type] = value.split(':')
+            if (!code || !isTriggerType(type)) continue
+            active[`${code}:${triggerFamily(type)}`] = { type, line: null, enteredAt: new Date().toISOString(), delivered: true }
+          }
+          return { version: 2, date: typeof s.date === 'string' ? s.date : today, fired: s.fired as string[], active }
+        }
       } catch (err) {
-        console.error(`[watchdog] 冷却状态读取失败,从当日空状态恢复: ${(err as Error).message}`)
+        console.error(`[watchdog] 冷却状态读取失败,从空状态恢复: ${(err as Error).message}`)
       }
     }
-    return { date: today, fired: [] }
+    return { version: 2, date: today, fired: [], active: {} }
   }
 
   private saveState(state: WatchdogState): void {
@@ -404,6 +482,14 @@ export class WatchdogManager {
   private appendAlert(text: string): void {
     try { appendFileSync(this.alertPath(), text + '\n') } catch (err) {
       console.error(`[watchdog] alerts.log 写入失败: ${(err as Error).message}`)
+    }
+  }
+
+  private async emitAlert(text: string, append = true): Promise<boolean> {
+    if (append) this.appendAlert(text)
+    try { await this.deps.deliverToUser(text); return true } catch (err) {
+      console.error(`[watchdog] 告警投递失败(alerts.log 已留底): ${(err as Error).message}`)
+      return false
     }
   }
 }
@@ -433,6 +519,20 @@ export function alertText(p: Position, price: number, trig: Trigger, now: Date):
   return `[${ts}] ${what}(成本 ${p.cost},${trig.type.includes('stop_loss') ? '注意风险' : '考虑兑现'})`
 }
 
+function recoveryText(p: Position, price: number, previous: Trigger['type'], now: Date): string {
+  const ts = beijingDateStr(now) + ' ' + String(Math.floor(beijingMinutes(now) / 60)).padStart(2, '0') + ':' + String(beijingMinutes(now) % 60).padStart(2, '0')
+  const label = previous.startsWith('stop_loss') ? '止损风险区' : '止盈触发区'
+  return `[${ts}] ✅ ${p.name}(${p.code}) 已脱离${label}，现价 ${price}(成本 ${p.cost})`
+}
+
+function triggerFamily(type: Trigger['type']): 'stop_loss' | 'take_profit' {
+  return type.startsWith('stop_loss') ? 'stop_loss' : 'take_profit'
+}
+
+function isTriggerType(value: string | undefined): value is Trigger['type'] {
+  return value === 'stop_loss' || value === 'stop_loss_near' || value === 'take_profit' || value === 'take_profit_near'
+}
+
 // 解析 hexin-ifind-stock__stock_highfreq_quotes 的返回(嵌套 JSON:outer.data 是字符串)。
 // tables[0]=表头(证券代码/证券简称/time/最新价/...),其后每行一只票。
 export function parseIfindPrices(toolOutput: string): Map<string, number> {
@@ -459,7 +559,9 @@ export function parseIfindQuotePoints(toolOutput: string): Map<string, PriceQuot
       const price = Number(row[priceIdx])
       const timeText = String(row[timeIdx] ?? '').trim().replace(' ', 'T')
       const time = new Date(`${timeText}+08:00`)
-      if (code && Number.isFinite(price) && price > 0 && Number.isFinite(time.getTime())) points.set(code, { price, asOf: time.toISOString() })
+      if (code && Number.isFinite(price) && price > 0 && Number.isFinite(time.getTime())) {
+        points.set(code, { price, asOf: time.toISOString(), sources: ['primary'] })
+      }
     }
     return points
   } catch { /* 解析失败返空 map,watchdog 本轮跳过该票 */ }

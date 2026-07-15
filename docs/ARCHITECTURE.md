@@ -139,7 +139,7 @@ OpenAI provider 负责 schema 降级和 tool-call 格式转换；Anthropic provi
 
 研究状态使用版本化 JSON envelope 并原子替换。损坏文件 fail-closed，避免在读失败后用空状态覆盖真实历史。行情 watchdog 同时保留 cooldown 状态和独立健康快照；生产阈值告警要求 iFind 与腾讯两个独立来源各自携带交易所时间、仍在 freshness 窗口且价格在 20bps 内形成 quorum，验证源缺失、陈旧或冲突只留降级证据、不触发可疑价格告警。公告 monitor 默认每 15 分钟检查持仓近 24 小时公告，不调用 LLM；重大事件必须先成功进入可靠投递链再标记 seen，投递失败会在下一轮重试。组合风险只接受足够新、数量有效且覆盖完整的价格。
 
-`research-intelligence.json` 统一保存 bounded 的行情质量、公告事件、估值、归因、决策结果和交易日验收记录。估值必须由调用方显式提供公司/行业特定且有序的熊、基、牛 PE 假设，并为价格、历史 EPS/BVPS 与前向 EPS 分别保存 source/asOf，逐字段标记 available/stale/missing。组合归因以独立观测的期末权益、净现金流、费用和滑点对持仓贡献做 reconciliation，非零残差会标 degraded。决策结果把 decision/due/observed 三个带时区时间与 `decisionId+horizon` 唯一键一起锁定，再记录基准收益、MFE/MAE，防止提前评价、重复记账和事后挑选成功样本。交易日审计在 09:15、09:30、11:30、13:00、14:57、15:00 自动累计实际触发漂移与全天报价覆盖均值；半日市只期望上午三个边界，重叠计数按交易日增量归零，收盘前为 collecting、到收盘才形成 passed/failed。未到真实交易日时只显示“等待证据”，不伪造通过结论。
+`research-intelligence.json` 统一保存 bounded 的行情质量、公告事件、估值、归因、决策结果和交易日验收记录。估值必须由调用方显式提供公司/行业特定且有序的熊、基、牛 PE 假设，并为价格、历史 EPS/BVPS 与前向 EPS 分别保存 source/asOf，逐字段标记 available/stale/missing。组合归因以独立观测的期末权益、净现金流、费用和滑点对持仓贡献做 reconciliation，非零残差会标 degraded。决策结果把 decision/due/observed 三个带时区时间与 `decisionId+horizon` 唯一键一起锁定，再记录基准收益、MFE/MAE，防止提前评价、重复记账和事后挑选成功样本。结果明细只保留最近 200 条，但完成身份和全历史命中/超额汇总独立保存；完成身份达到 10000 条硬容量时明确拒绝写入并要求归档，不静默淘汰旧身份后重新评价。交易日审计在 09:15、09:30、11:30、13:00、14:57、15:00 自动累计实际触发漂移与全天报价覆盖均值；半日市只期望上午三个边界，重叠计数按交易日增量归零，收盘前为 collecting、到收盘才形成 passed/failed。未到真实交易日时只显示“等待证据”，不伪造通过结论。
 
 回测是独立 Python 包：收盘信号下一根开盘执行，模拟 T+1、一手、费用、滑点、停牌和分板块涨跌停。主板/创业科创/北交默认分别按 10%/20%/30%，ST 与上市初期状态由显式 override 或 bar 标志提供。数据缓存带复权元数据；模拟账户通过严格标准化契约导入，拒绝非有限数、非法时间和重复成交 ID。二者均无券商连接，输出只能作为研究证据，不能视为收益保证。
 
@@ -166,3 +166,11 @@ OpenAI provider 负责 schema 降级和 tool-call 格式转换；Anthropic provi
 提交门禁由 typecheck、lint、coverage、TS/Python tests 和 GitHub Actions 共同执行。
 
 `scripts/deploy.sh` 要求已提交的 tracked working tree，拒绝部署路径内的未跟踪文件，并通过 `git ls-files` manifest 只同步该 revision 的代码和公开工具/技能定义。它不覆盖私有配置与运行记忆，交易日历也只在缺失时初始化。远端安装依赖、typecheck、PM2 重启后，脚本必须从 `/api/status` 验证当前 Git revision；可选在隔离 Python 环境安装并复验 AkShare、NumPy、pandas。
+
+## 12. 每日投研闭环
+
+watchdog 把通过主源+腾讯 quorum 的持仓与待评估决策标的价格交给 `DailyResearchOrchestrator`，并在同一腾讯批次顺带取得沪深300基准。编排器按北京时间交易日幂等维护 `memory/daily-research.json`：首个 09:30 后可信 tick 形成 trailing PE/PB 估值证据，盘中积累高低价、持仓风险线、当日关联事件和逐标的报价覆盖，日终形成 `active_positions_only` 归因。研究覆盖同时核算活跃持仓和已退出但待复盘的决策标的，归因覆盖则单列活跃持仓口径；任一缺口都不会被静默当作成功。单日活跃持仓硬容量为 500，容量内必须为每个标的保留当日循环；总历史明细有界为 2000 条，只淘汰旧日明细，不挤掉当前交易日证据，超出活跃容量则明确失败。没有 forward consensus 时不生成情景估值；没有账户现金、外部现金流、真实费用和滑点时归因明确 degraded，不能冒充完整账户收益。
+
+`investment_decision_record` 对 buy/add/reduce/sell 强制冻结证券代码、决策价、沪深300基准价和自然日观察窗口。每个待评估决策有自己的有界累积器，只保留高/低点、样本数和最新配对行情，因此不受原始日循环截断影响；减仓/卖出后 watchdog 仍继续跟踪该标的。待评决策硬容量为 500，超限时研究循环明确失败并要求归档或关闭旧决策，不截断累积器。只有证券与基准都在 `due_at` 或之后形成可信配对报价，才定格绝对/超额收益、MFE/MAE，并以 decision+horizon 幂等写入 outcome；hold/watch/avoid 仅留日志，不强行套方向性收益。`/api/status`、`/api/finance` 和工作台同时暴露研究/持仓覆盖率、缺价代码、待评/到期积压与最早到期时间、下次监测、全历史命中/平均超额，以及最新循环的关联事件和止损止盈距离。
+
+止损/止盈告警使用跨日状态机：持续处于同一区域不重复，near→breach、线位变更和恢复安全区才再次通知。session audit 只允许边界后的 tick 认领该边界，避免提前 cadence tick 制造负漂移伪失败。

@@ -162,6 +162,7 @@ tbody tr:last-child td { border-bottom: 0; }
           <div class="health-item"><span>行情交叉验证</span><strong id="quote-quality">等待证据</strong></div>
           <div class="health-item"><span>公告事件监控</span><strong id="event-monitor">等待证据</strong></div>
           <div class="health-item"><span>交易日验收</span><strong id="session-audit">尚未完成</strong></div>
+          <div class="health-item"><span>研究循环</span><strong id="daily-research">等待首个可信报价</strong></div>
         </div>
         <div id="research-evidence" class="card-meta"></div>
       </section>
@@ -182,6 +183,17 @@ const money = v => Number.isFinite(Number(v)) ? '¥' + num(v, 2) : '--';
 const pct = v => Number.isFinite(Number(v)) ? (Number(v) * 100).toFixed(2) + '%' : '--';
 const shortTime = v => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '--';
 const tone = v => Number(v) > 0 ? 'positive' : Number(v) < 0 ? 'negative' : '';
+const researchStatus = v => ({ empty: '等待数据', collecting: '采集中', healthy: '证据完整', degraded: '待补证据' }[v] || v || '未知');
+const researchReason = v => String(v || '').startsWith('missing verified quotes:')
+  ? `缺少可信行情: ${String(v).split(':').slice(1).join(':').trim()}` : ({
+  'forward consensus EPS is unavailable': '缺少一致预期 EPS',
+  'trailing PE is unavailable': '缺少滚动市盈率',
+  'price-to-book is unavailable': '缺少市净率',
+  'benchmark is unavailable': '缺少沪深300基准行情',
+  'quote source provenance is unavailable': '缺少行情来源证据',
+  'account cash and external cash flows are not configured': '未接入账户现金与外部资金流',
+  'intraday position changes are not modeled': '当日持仓变动尚未纳入归因',
+}[v] || v);
 
 function renderStatus(finance, status) {
   const router = status && status.router_health;
@@ -213,10 +225,13 @@ function renderResearch(finance, status) {
   const quote = Array.isArray(intel.quote_checks) ? intel.quote_checks.at(-1) : null;
   const audit = Array.isArray(intel.session_audits) ? intel.session_audits.at(-1) : null;
   const monitor = status && status.market_event_monitor;
+  const daily = finance && finance.daily_research;
   document.getElementById('quote-quality').textContent = quote ? `${quote.status || 'unknown'} · ${quote.code || '--'}` : '等待盘中双源报价';
   document.getElementById('event-monitor').textContent = runtimeIntel && runtimeIntel.status === 'degraded' ? 'degraded · 状态损坏'
     : monitor ? `${monitor.status} · ${monitor.event_count || 0} 条` : '等待监控启动';
   document.getElementById('session-audit').textContent = audit ? `${audit.date || '--'} · ${audit.status === 'passed' ? '通过' : audit.status === 'failed' ? '失败' : '留证中'}` : '等待真实交易日';
+  const dailyCoverage = daily && Number.isFinite(Number(daily.coverage)) ? `${Math.round(Number(daily.coverage) * 100)}%` : '--';
+  document.getElementById('daily-research').textContent = daily ? `${researchStatus(daily.status)} · 覆盖 ${dailyCoverage} · 待评 ${daily.pending_decision_count || 0}` : '等待研究循环';
   const valuation = Array.isArray(intel.valuations) ? intel.valuations.at(-1) : null;
   const attribution = Array.isArray(intel.attributions) ? intel.attributions.at(-1) : null;
   const outcome = Array.isArray(intel.outcomes) ? intel.outcomes.at(-1) : null;
@@ -224,7 +239,14 @@ function renderResearch(finance, status) {
     attribution && `组合归因 ${shortTime(attribution.asOf)}`, outcome && `决策复盘 ${outcome.decisionId || ''}`].filter(Boolean);
   const auditReason = audit && audit.status === 'failed' ? `验收失败: 缺边界 ${(audit.missingBoundaries || []).join(',') || '无'} / 覆盖 ${pct(audit.quoteCoverage)} / 漂移 ${num(audit.maxDriftSeconds,0)}秒 / 重叠 ${audit.overlapSuppressed || 0}` : '';
   const stateError = intel.status === 'degraded' ? `研究状态降级: ${intel.error || '状态不可读'}` : '';
-  document.getElementById('research-evidence').textContent = [stateError, auditReason, ...evidence].filter(Boolean).join(' · ') || '估值、归因和建议效果将在形成证据后显示';
+  const dailyReason = daily && daily.status === 'degraded' ? `研究循环待补: ${(daily.degraded_reasons || []).map(researchReason).join(' / ') || researchReason(daily.error) || '未知原因'}` : '';
+  const dueBacklog = daily ? `待评 ${daily.pending_decision_count || 0} / 已到期 ${daily.due_decision_count || 0} / 最早到期 ${shortTime(daily.oldest_due_at)}` : '';
+  const performance = daily ? `历史复盘 ${daily.outcome_count || 0} 条（近期明细 ${daily.outcome_window_count || 0}） / 命中 ${pct(daily.outcome_hit_rate)} / 平均超额 ${pct(daily.average_excess_return)}` : '';
+  const latestCycle = daily && Array.isArray(daily.cycles) ? daily.cycles.at(-1) : null;
+  const risk = latestCycle && latestCycle.risk && typeof latestCycle.risk === 'object' ? latestCycle.risk : null;
+  const cycleContext = latestCycle ? `${latestCycle.code || '--'} 事件 ${Array.isArray(latestCycle.eventIds) ? latestCycle.eventIds.length : 0} 条 / 距止损 ${risk ? pct(risk.distanceToStopPct) : '--'} / 距止盈 ${risk ? pct(risk.distanceToTakeProfitPct) : '--'}` : '';
+  const dailyRun = daily ? `下次监测 ${shortTime(daily.next_run_at)}` : '';
+  document.getElementById('research-evidence').textContent = [stateError, auditReason, dailyReason, dueBacklog, performance, cycleContext, dailyRun, ...evidence].filter(Boolean).join(' · ') || '估值、归因和建议效果将在形成证据后显示';
 }
 
 function renderRisk(finance) {
