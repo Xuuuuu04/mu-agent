@@ -11,10 +11,19 @@ export class MarketSessionAuditor {
     const expected = halfDay ? HALF_DAY_EXPECTED : FULL_DAY_EXPECTED
     const snapshot = this.store.snapshot()
     const abandoned = snapshot.sessionAudits.findLast(item => item.date !== local.date && item.status === 'collecting')
-    if (abandoned) this.store.saveSessionAudit({ ...abandoned, status: 'failed', pass: false,
-      finalizedAt: now.toISOString(), finalizationReason: 'next trading day started before close boundary was observed' })
+    if (abandoned) {
+      const abandonedExpected = storedExpected(abandoned.expected)
+      const abandonedObserved = sanitizeObservations(abandoned.observed, abandonedExpected)
+      const abandonedCoverage = ratio(abandoned.quoteCoverage) ? abandoned.quoteCoverage : 0
+      const abandonedOverlap = nonNegativeInteger(abandoned.overlapSuppressed) ? abandoned.overlapSuppressed : 0
+      const migrated = evaluateMarketSession({ date: String(abandoned.date), expected: abandonedExpected,
+        observed: abandonedObserved, quoteCoverage: abandonedCoverage, overlapSuppressed: abandonedOverlap })
+      this.store.saveSessionAudit({ ...abandoned, ...migrated, status: 'failed', pass: false,
+        expected: abandonedExpected, observed: abandonedObserved, finalizedAt: now.toISOString(),
+        finalizationReason: 'next trading day started before close boundary was observed' })
+    }
     const previous = snapshot.sessionAudits.findLast(item => item.date === local.date)
-    const observed = Array.isArray(previous?.observed) ? previous.observed.filter(validObservation) as Array<{ boundary: string; driftSeconds: number }> : []
+    const observed = sanitizeObservations(previous?.observed, expected)
     for (const boundary of expected) {
       const [hour, minute] = boundary.split(':').map(Number)
       const driftSeconds = (local.hour * 3600 + local.minute * 60 + local.second) - (hour! * 3600 + minute! * 60)
@@ -43,9 +52,38 @@ export class MarketSessionAuditor {
   }
 }
 
-function validObservation(value: unknown): boolean {
-  return !!value && typeof value === 'object' && typeof (value as { boundary?: unknown }).boundary === 'string'
-    && Number.isFinite((value as { driftSeconds?: unknown }).driftSeconds)
+function sanitizeObservations(value: unknown, expected: string[]): Array<{ boundary: string; driftSeconds: number }> {
+  if (!Array.isArray(value)) return []
+  const observed: Array<{ boundary: string; driftSeconds: number }> = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const boundary = (item as { boundary?: unknown }).boundary
+    const driftSeconds = (item as { driftSeconds?: unknown }).driftSeconds
+    if (typeof boundary !== 'string' || !expected.includes(boundary) || typeof driftSeconds !== 'number'
+      || !Number.isFinite(driftSeconds) || driftSeconds < 0 || driftSeconds > 90
+      || observed.some(entry => entry.boundary === boundary)) continue
+    observed.push({ boundary, driftSeconds })
+  }
+  return observed
+}
+
+function storedExpected(value: unknown): string[] {
+  if (!Array.isArray(value)) return FULL_DAY_EXPECTED
+  if (sameBoundaries(value, HALF_DAY_EXPECTED)) return HALF_DAY_EXPECTED
+  if (sameBoundaries(value, FULL_DAY_EXPECTED)) return FULL_DAY_EXPECTED
+  return FULL_DAY_EXPECTED
+}
+
+function sameBoundaries(value: unknown[], canonical: string[]): boolean {
+  return value.length === canonical.length && value.every((item, index) => item === canonical[index])
+}
+
+function ratio(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+}
+
+function nonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
 }
 
 function localParts(now: Date) {

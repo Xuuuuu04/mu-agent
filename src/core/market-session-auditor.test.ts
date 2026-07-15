@@ -41,6 +41,32 @@ test('MarketSessionAuditor never lets an early cadence tick claim a future bound
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('MarketSessionAuditor removes legacy negative-drift boundary claims during restart migration', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shion-session-legacy-negative-'))
+  try {
+    const store = new ResearchIntelligenceStore(dir)
+    store.saveSessionAudit({
+      date: '2026-07-13', status: 'collecting', pass: false,
+      expected: ['09:15', '09:30', '11:30', '13:00', '14:57', '15:00'],
+      observed: [
+        { boundary: '09:15', driftSeconds: 0 }, { boundary: '09:30', driftSeconds: -54 },
+        { boundary: '11:30', driftSeconds: 0 }, { boundary: '13:00', driftSeconds: 1 },
+        { boundary: '14:57', driftSeconds: 0 }, { boundary: '15:00', driftSeconds: -89 },
+      ],
+      coverageSamples: [1], quoteCoverage: 1, overlapSuppressed: 0,
+    })
+    new MarketSessionAuditor(store).record(new Date('2026-07-13T07:02:00Z'), 1, 0)
+    const migrated = store.snapshot().sessionAudits[0]!
+    assert.deepEqual(migrated.observed, [
+      { boundary: '09:15', driftSeconds: 0 }, { boundary: '11:30', driftSeconds: 0 },
+      { boundary: '13:00', driftSeconds: 1 }, { boundary: '14:57', driftSeconds: 0 },
+    ])
+    assert.deepEqual(migrated.missingBoundaries, ['09:30', '15:00'])
+    assert.equal(migrated.maxDriftSeconds, 1)
+    assert.equal(migrated.status, 'failed')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('MarketSessionAuditor averages all coverage samples and uses half-day boundaries', () => {
   const dir = mkdtempSync(join(tmpdir(), 'shion-session-half-'))
   try {
@@ -102,5 +128,30 @@ test('MarketSessionAuditor finalizes failed when close tick is missed, including
       assert.equal(store2.snapshot().sessionAudits[0]!.status, 'failed')
       assert.match(String(store2.snapshot().sessionAudits[0]!.finalizationReason), /next trading day/)
     } finally { rmSync(dir2, { recursive: true, force: true }) }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('MarketSessionAuditor canonicalizes and fails closed on a malformed abandoned audit', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shion-session-malformed-abandoned-'))
+  try {
+    const store = new ResearchIntelligenceStore(dir)
+    store.saveSessionAudit({
+      date: '2026-07-13', status: 'collecting', pass: false,
+      expected: ['09:15', '12:34'],
+      observed: [
+        { boundary: '09:15', driftSeconds: 1 }, { boundary: '09:15', driftSeconds: 2 },
+        { boundary: '09:30', driftSeconds: -1 }, { boundary: '11:30', driftSeconds: 91 },
+        { boundary: '12:34', driftSeconds: 0 },
+      ],
+      coverageSamples: [2], quoteCoverage: 2, overlapSuppressed: -1,
+    })
+    new MarketSessionAuditor(store).record(new Date('2026-07-14T01:15:00Z'), 1, 0)
+    const migrated = store.snapshot().sessionAudits[0]!
+    assert.deepEqual(migrated.expected, ['09:15', '09:30', '11:30', '13:00', '14:57', '15:00'])
+    assert.deepEqual(migrated.observed, [{ boundary: '09:15', driftSeconds: 1 }])
+    assert.equal(migrated.quoteCoverage, 0)
+    assert.equal(migrated.overlapSuppressed, 0)
+    assert.equal(migrated.status, 'failed')
+    assert.equal(migrated.pass, false)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
