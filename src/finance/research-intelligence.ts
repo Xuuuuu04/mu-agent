@@ -56,10 +56,13 @@ export function mergeMarketEvents(existing: MarketEvent[], incoming: RawMarketEv
     const canonical = `${raw.source}|${raw.url ?? ''}|${raw.title.trim()}|${raw.publishedAt}`
     const id = createHash('sha256').update(canonical).digest('hex').slice(0, 20)
     const relatedCodes = positionCodes.filter(code => raw.codeHints?.includes(code) || raw.title.includes(code) || raw.content?.includes(code)).sort()
-    const prior = map.get(id)
+    const prior = map.get(id) ?? [...map.values()].find(event => equivalentCompanyEvent(event, raw, relatedCodes))
     if (prior) {
       const mergedCodes = [...new Set([...prior.relatedCodes, ...relatedCodes])].sort()
-      map.set(id, { ...prior, relatedCodes: mergedCodes, requiresAlert: mergedCodes.length > 0 && prior.severity !== 'normal' })
+      map.set(prior.id, { ...prior,
+        ...(prior.url === undefined && raw.url !== undefined ? { url: raw.url } : {}),
+        ...(prior.content === undefined && raw.content !== undefined ? { content: raw.content } : {}),
+        relatedCodes: mergedCodes, requiresAlert: mergedCodes.length > 0 && prior.severity !== 'normal' })
       continue
     }
     const critical = /停牌|重大资产重组|退市|立案|处罚|风险警示|债务违约|控制权变更/.test(`${raw.title} ${raw.content ?? ''}`)
@@ -72,6 +75,22 @@ export function mergeMarketEvents(existing: MarketEvent[], incoming: RawMarketEv
   const rank = { critical: 2, high: 1, normal: 0 }
   return [...map.values()].sort((a, b) => rank[b.severity] - rank[a.severity]
     || Date.parse(b.publishedAt) - Date.parse(a.publishedAt))
+}
+
+function equivalentCompanyEvent(existing: MarketEvent, incoming: RawMarketEvent, relatedCodes: string[]): boolean {
+  if (relatedCodes.length === 0 || !existing.relatedCodes.some(code => relatedCodes.includes(code))) return false
+  return normalizedEventTitle(existing.title) === normalizedEventTitle(incoming.title)
+    && beijingEventDate(existing.publishedAt) === beijingEventDate(incoming.publishedAt)
+}
+
+function normalizedEventTitle(value: string): string {
+  return value.replace(/\s+/g, '').replace(/[：:]/g, ':').trim()
+}
+
+function beijingEventDate(value: string): string {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return ''
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
 }
 
 export interface ValuationInput {

@@ -10,7 +10,8 @@ import { ModelRouter } from './providers/router.js'
 import { ProactiveManager } from './core/proactive.js'
 import { WatchdogManager, parseIfindPrices, parseIfindQuotePoints } from './core/watchdog.js'
 import { fetchTencentPrices, fetchTencentQuotePoints } from './core/tencent-quotes.js'
-import { MarketEventMonitor, parseIfindNoticeEvents } from './core/market-event-monitor.js'
+import { MarketEventMonitor, parseIfindNoticeEvents, type EventFetcher } from './core/market-event-monitor.js'
+import { CninfoAnnouncementClient } from './core/cninfo-announcements.js'
 import { MarketSessionAuditor } from './core/market-session-auditor.js'
 import { beijingDateStr, beijingMinutes, isTradingDay } from './core/market-hours.js'
 import { log } from './core/logger.js'
@@ -218,12 +219,8 @@ async function main() {
   const aStock = config.scheduler.a_stock
   const watchdogCfg = aStock?.watchdog
 
-  eventMonitor = new MarketEventMonitor({
-    store: researchIntelligence,
-    getPositionCodes: () => loadActivePositionCodes(config.paths.data).slice(0, 20),
-    deliverToUser: delivery.deliverToUser,
-    intervalMs: (watchdogCfg?.event_interval_seconds ?? 900) * 1000,
-    fetchEvents: async (codes, from, to) => {
+  const cninfoAnnouncements = new CninfoAnnouncementClient()
+  const ifindEventFetcher: EventFetcher = async (codes, from, to) => {
       const tool = tools.get('ifind-news__search_notice')
       if (!tool) throw new Error('iFind notice source unavailable')
       const events = []
@@ -234,7 +231,14 @@ async function main() {
         events.push(...parseIfindNoticeEvents(result.output).map(event => ({ ...event, codeHints: [code] })))
       }
       return events
-    },
+  }
+  eventMonitor = new MarketEventMonitor({
+    store: researchIntelligence,
+    getPositionCodes: () => loadActivePositionCodes(config.paths.data).slice(0, 20),
+    deliverToUser: delivery.deliverToUser,
+    intervalMs: (watchdogCfg?.event_interval_seconds ?? 900) * 1000,
+    fetchEvents: (codes, from, to) => cninfoAnnouncements.fetch(codes, from, to),
+    fallbackFetchEvents: ifindEventFetcher,
   })
 
   // A 股盯盘 watchdog:盘中定时查持仓现价,触止损/止盈主动告警(确定性,不烧 LLM)。

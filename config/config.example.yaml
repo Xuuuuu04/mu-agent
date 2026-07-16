@@ -54,7 +54,7 @@ scheduler:
   #     interval_seconds: 180               # 连续竞价每 3 分钟
   #     auction_interval_seconds: 60        # 开盘集合竞价每 1 分钟
   #     close_auction_interval_seconds: 30  # 收盘集合竞价每 30 秒
-  #     event_interval_seconds: 900         # 持仓公告每 15 分钟检查一次,不调用 LLM
+  #     event_interval_seconds: 900         # 巨潮官方公告每 15 分钟检查，iFind 故障兜底；23:30-07:00 静默
   #     near_pct: 0.01                      # 距止损/止盈线 1% 预警
   # 成本估算:按 180/60/30 秒配置,完整交易日约 100 次批量报价请求(全部持仓合并为一批),0 次 LLM 调用;
   # 每次腾讯验证批次会顺带取沪深300；09:30 后自动生成 trailing PE/PB 快照，日终生成持仓市值归因并评估到期决策。
